@@ -1,0 +1,62 @@
+services:
+  api-gateway:
+    build: ./api-gateway
+    ports:
+      - "3000:3000"
+    depends_on:
+      - otel-collector
+    environment:
+      - NODE_ENV=production
+  
+  order-service:
+    build: ./order-service
+    ports:
+      - "3001:3001"
+    depends_on:
+      - otel-collector
+
+  payment-service:
+    build: ./payment-service
+    ports:
+      - "3002:3002"
+    depends_on:
+      - otel-collector
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    volumes:
+      - ./otel-collector/otelcol-config.yml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+
+  prometheus:
+    image: prom/prometheus:v2.50.0
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    command: 
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
+
+  grafana:
+    image: grafana/grafana:13.0.1
+    ports:
+      - "3030:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+  
+  load-generator:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./load-generator.js:/app/load-generator.js
+    command: node load-generator.js
+    depends_on:
+      - api-gateway
