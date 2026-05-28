@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "brainstorming": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "skillPath": "skills/brainstorming/SKILL.md",
+      "computedHash": "f483c304fcde060211ffae00f49bb728536e7e7613c99db45b5b924d9fc17243"
+    },
+    "review": {
+      "source": "camacho/ai-skills",
+      "sourceType": "github",
+      "skillPath": "skills/review/SKILL.md",
+      "computedHash": "26220f3293b49074be12216a755f5f92251eb1c5f07eba0af7ab3a8243a5c51c"
+    }
+  }
+}

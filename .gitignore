@@ -13,6 +13,16 @@ pnpm-debug.log*
 .env
 .env.*
 !.env.example
+*.local
+
+# Package manager state
+.pnpm-store/
+.npm/
+.yarn/
+.parcel-cache/
+.turbo/
+.next/
+.vite/
 
 # OS files
 .DS_Store
@@ -29,6 +39,13 @@ dist/
 build/
 coverage/
 .nyc_output/
+*.tsbuildinfo
+
+# Test / tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.eslintcache
 
 # Docker runtime data
 prometheus/data/
