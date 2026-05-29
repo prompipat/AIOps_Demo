@@ -13,12 +13,12 @@ const sdk = new NodeSDK({
         'deployment.environment': 'lab',
     }),
     traceExporter: new OTLPTraceExporter({
-        url: 'grpc://otel-collector:4317',
+        url: 'http://otel-collector:4317',
     }),
     metricReaders: [
         new PeriodicExportingMetricReader({
             exporter: new OTLPMetricExporter({
-                url: 'grpc://otel-collector:4317',
+                url: 'http://otel-collector:4317',
             }),
             exportIntervalMillis: 5000,
         }),

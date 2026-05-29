@@ -12,10 +12,10 @@ const sdk = new NodeSDK({
     [SEMRESATTRS_SERVICE_VERSION]: '1.0.0',
     'deployment.environment': 'lab',
   }),
-  traceExporter: new OTLPTraceExporter({ url: 'grpc://otel-collector:4317' }),
+  traceExporter: new OTLPTraceExporter({ url: 'http://otel-collector:4317' }),
   metricReaders: [
     new PeriodicExportingMetricReader({
-      exporter: new OTLPMetricExporter({ url: 'grpc://otel-collector:4317' }),
+      exporter: new OTLPMetricExporter({ url: 'http://otel-collector:4317' }),
       exportIntervalMillis: 5000,
     }),
   ],
