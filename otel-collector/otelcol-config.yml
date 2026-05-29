@@ -18,6 +18,10 @@ exporters:
   prometheus:
     endpoint: "0.0.0.0:8889"
     namespace: aiops_lab
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
   debug:
     verbosity: basic
 
@@ -26,7 +30,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [debug]
+      exporters: [otlp/jaeger, debug]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
