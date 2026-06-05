@@ -22,6 +22,10 @@ exporters:
     endpoint: jaeger:4317
     tls:
       insecure: true
+  otlphttp/newrelic:
+    endpoint: https://otlp.nr-data.net
+    headers:
+      api-key: ${NEW_RELIC_LICENSE_KEY}
   debug:
     verbosity: basic
 
@@ -30,8 +34,8 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [otlp/jaeger, debug]
+      exporters: [otlp/jaeger, otlphttp/newrelic, debug]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [prometheus]
+      exporters: [prometheus, otlphttp/newrelic]

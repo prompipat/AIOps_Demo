@@ -130,6 +130,22 @@
         "expr": "histogram_quantile(0.99, rate(aiops_lab_http_client_duration_milliseconds_bucket[2m]))",
         "legendFormat": "{{job}} → {{http_host}}"
       }]
+    },
+    {
+      "id": 11, "gridPos": { "x": 0, "y": 30, "w": 24, "h": 8 },
+      "title": "Live Logs — All Services",
+      "type": "logs",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [{
+        "expr": "{container=~\"aiops-lab.*\"}",
+        "legendFormat": ""
+      }]
     }
   ],
   "schemaVersion": 39
