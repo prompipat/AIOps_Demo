@@ -30,12 +30,31 @@ app.post('/order', async (req, res) => {
   // manual span สำหรับ business logic
   const span = tracer.startSpan('create-order');
   span.setAttributes({ 'order.item': item, 'order.quantity': quantity, 'user.id': userId });
+  console.log(JSON.stringify({
+    service: 'api-gateway',
+    level: 'info',
+    msg: 'received order request',
+    route: '/order',
+    method: 'POST',
+    userId,
+    item,
+    quantity
+  }));
 
   try {
     // เรียก order-service
     const orderRes = await axios.post('http://order-service:3001/create', {
       item, quantity, userId,
     });
+    console.log(JSON.stringify({
+      service: 'api-gateway',
+      level: 'info',
+      msg: 'order request completed',
+      route: '/order',
+      method: 'POST',
+      status: 'success',
+      duration_ms: Date.now() - startTime
+    }))
 
     orderCounter.add(1, { status: 'success', item });
     span.setStatus({ code: 1 }); // OK
@@ -45,6 +64,16 @@ app.post('/order', async (req, res) => {
     span.recordException(err);
     span.setStatus({ code: 2, message: err.message }); // ERROR
     res.status(500).json({ error: err.message });
+    console.error(JSON.stringify({
+      service: 'api-gateway',
+      level: 'error',
+      msg: 'order request failed',
+      route: '/order',
+      method: 'POST',
+      status: 'failed',
+      error: err.message,
+      duration_ms: Date.now() - startTime
+    }))
   } finally {
     span.end();
     latencyHistogram.record(Date.now() - startTime, { route: '/order' });

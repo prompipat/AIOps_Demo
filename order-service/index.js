@@ -17,6 +17,16 @@ app.post('/create', async (req, res) => {
 
   const span = tracer.startSpan('process-order');
   span.setAttributes({ 'order.item': item, 'order.quantity': quantity });
+  console.log(JSON.stringify({
+    service: 'order-service',
+    level: 'info',
+    msg: 'received payment request',
+    route: '/payment',
+    method: 'POST',
+    userId,
+    item,
+    quantity
+  }));
 
   try {
     // จำลอง processing delay 50–150ms
@@ -32,11 +42,30 @@ app.post('/create', async (req, res) => {
     paymentCounter.add(1, { status: 'success' });
     span.setStatus({ code: 1 });
     res.json({ orderId, item, quantity, payment: payRes.data });
+    console.log(JSON.stringify({
+      service: 'order-service',
+      level: 'info',
+      msg: 'payment request completed',
+      route: '/payment',
+      method: 'POST',
+      status: 'success',
+      duration_ms: Date.now() - start
+    }))
   } catch (err) {
     paymentCounter.add(1, { status: 'failed' });
     span.recordException(err);
     span.setStatus({ code: 2, message: err.message });
     res.status(500).json({ error: err.message });
+    console.error(JSON.stringify({
+      service: 'order-service',
+      level: 'error',
+      msg: 'payment request failed',
+      route: '/payment',
+      method: 'POST',
+      status: 'failed',
+      error: err.message,
+      duration_ms: Date.now() - start
+    }))
   } finally {
     span.end();
     orderProcessDuration.record(Date.now() - start);

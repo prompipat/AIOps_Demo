@@ -2,34 +2,35 @@ groups:
   - name: aiops-lab-alerts
     interval: 15s
     rules:
-        # Payment error rate > 25% 2 minute
+
       - alert: HighPaymentErrorRate
         expr: |
-          rate(aiops_lab_charges_total{status="failed"}[2m])
-          /
-          rate(aiops_lab_charges_total[2m])
-          * 100 > 25 
+          (
+            rate(aiops_lab_charges_total{status="failed"}[2m])
+            /
+            rate(aiops_lab_charges_total[2m])
+          ) * 100 > 25
         for: 1m
         labels:
           severity: critical
           team: payments
         annotations:
-          summary: "Payment more error rate!!"
-          description: "Error rate อยู่ที่ {{ printf \"%.1f\" $value }}% (threshold 25%)"
+          summary: "Payment error rate สูงผิดปกติ"
+          description: "Error rate อยู่ที่ {{ humanize $value }}% (threshold 25%)"
 
-      # Payment service หยุดรับ request นานกว่า 1 นาที
-      - alert: PaymentServiceDown
+      - alert: HighAPILatency
         expr: |
-          rate(aiops_lab_charges_total[1m]) == 0
-        for: 1m
+          histogram_quantile(0.99,
+            rate(aiops_lab_api_request_duration_milliseconds_bucket[2m])
+          ) > 800
+        for: 2m
         labels:
-          severity: critical
-          team: payments
+          severity: warning
+          team: platform
         annotations:
-          summary: "API Latency p99 > 800ms"
-          description: "p99 latency at {{ printf \"%.0f\" $value }}ms"
-      
-      # Payment service หยุดรับ request นานกว่า 1 นาที
+          summary: "API latency p99 สูงเกิน 800ms"
+          description: "p99 latency อยู่ที่ {{ humanize $value }}ms"
+
       - alert: PaymentServiceDown
         expr: |
           rate(aiops_lab_charges_total[1m]) == 0
@@ -41,17 +42,17 @@ groups:
           summary: "Payment service ไม่มี traffic"
           description: "ไม่มี charge request เข้ามานานกว่า 1 นาที"
 
-      # Order success rate ต่ำกว่า 70%
       - alert: LowOrderSuccessRate
         expr: |
-          rate(aiops_lab_orders_created_total{status="success"}[2m])
-          /
-          rate(aiops_lab_orders_created_total[2m])
-          * 100 < 70
+          (
+            rate(aiops_lab_orders_created_total{status="success"}[2m])
+            /
+            rate(aiops_lab_orders_created_total[2m])
+          ) * 100 < 70
         for: 2m
         labels:
           severity: warning
           team: orders
         annotations:
           summary: "Order success rate ต่ำกว่า 70%"
-          description: "Success rate อยู่ที่ {{ printf \"%.1f\" $value }}%"
+          description: "Success rate อยู่ที่ {{ humanize $value }}%"

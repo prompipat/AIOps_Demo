@@ -22,6 +22,16 @@ const FAILURE_RATE = 0.15;
 app.post('/charge', async (req, res) => {
   const start = Date.now();
   const { orderId, amount, userId } = req.body;
+  console.log(JSON.stringify({
+    service: 'payment-service',
+    level: 'info',
+    msg: 'received charge request',
+    route: '/charge',
+    method: 'POST',
+    orderId,
+    amount,
+    currency: 'THB'
+  }))
 
   const span = tracer.startSpan('charge-payment');
   span.setAttributes({
@@ -41,6 +51,19 @@ app.post('/charge', async (req, res) => {
     span.setStatus({ code: 2, message: 'payment_failed' });
     span.end();
     chargeLatency.record(Date.now() - start, { status: 'failed' });
+    console.error(JSON.stringify({
+        service: 'payment-service',
+        level: 'error',
+        msg: 'charge failed',
+        route: '/charge',
+        method: 'POST',
+        orderId,
+        amount,
+        currency: 'THB',
+        status: 'failed',
+        reason: 'insufficient_funds',
+        duration_ms: Date.now() - start
+    }))
     return res.status(402).json({ success: false, reason: 'insufficient_funds' });
   }
 
@@ -49,6 +72,18 @@ app.post('/charge', async (req, res) => {
   span.setStatus({ code: 1 });
   span.end();
   chargeLatency.record(Date.now() - start, { status: 'success' });
+  console.log(JSON.stringify({
+    service: 'payment-service',
+    level: 'info',
+    msg: 'charge succeeded',
+    route: '/charge',
+    orderId,
+    amount,
+    currency: 'THB',
+    status: 'success',
+    transactionId,
+    duration_ms: Date.now() - start
+  }))
 
   res.json({ success: true, transactionId: `TXN-${Date.now()}`, amount });
 });
