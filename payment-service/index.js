@@ -67,6 +67,7 @@ app.post('/charge', async (req, res) => {
     return res.status(402).json({ success: false, reason: 'insufficient_funds' });
   }
 
+  const transactionId = `TXN-${Date.now()}`;
   chargeCounter.add(1, { status: 'success' });
   revenueCounter.add(amount, { currency: 'THB' });
   span.setStatus({ code: 1 });
@@ -85,7 +86,7 @@ app.post('/charge', async (req, res) => {
     duration_ms: Date.now() - start
   }))
 
-  res.json({ success: true, transactionId: `TXN-${Date.now()}`, amount });
+  res.json({ success: true, transactionId, amount });
 });
 
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'payment-service' }));

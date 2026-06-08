@@ -67,16 +67,20 @@ services:
     command: 
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
 
   alertmanager:
     image: prom/alertmanager:v0.27.0
     ports:
       - "9093:9093"
+    env_file:
+      - .env
     volumes:
       - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
-    command: 
-      - '--config.file=/etc/alertmanager/alertmanager.yml'
-      - '--log.level=info'
+      - ./alertmanager/start.sh:/usr/local/bin/start.sh
+    entrypoint: /bin/sh
+    command:
+      - /usr/local/bin/start.sh
 
   webhook-logger:
     build: ./webhook-logger

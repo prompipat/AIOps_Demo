@@ -6,7 +6,7 @@ route:
   group_by: [alertname, team]
   group_wait: 10s
   group_interval: 30s
-  repeat_interval: 10m
+  repeat_interval: 1h
   receiver: slack-default
 
   routes:
@@ -22,18 +22,19 @@ receivers:
     slack_configs:
       - channel: '#alerts'
         title: '{{ .GroupLabels.alertname }}'
-        text: '{{ range .Alert }}{{ .Annotations.summary }}\n{{ .Annotations.description }}{{ end }}'
+        text: '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ .Annotations.description }}{{ end }}'
         send_resolved: true
 
   - name: slack-critical
     slack_configs:
       - channel: '#alerts'
-        color: '#FF0000'
-        title: '🔴 CRITICAL: {{ .GroupLabels.alertname }}'
+        color: '{{ if eq .Status "resolved" }}#36a64f{{ else }}#FF0000{{ end }}'
+        title: '{{ if eq .Status "resolved" }}✅ RESOLVED{{ else }}🔴 CRITICAL{{ end }}: {{ .GroupLabels.alertname }}'
         text: |
           *Summary:* {{ .CommonAnnotations.summary }}
           *Detail:* {{ .CommonAnnotations.description }}
           *Team:* {{ .CommonLabels.team }}
+          *Status:* {{ .Status | toUpper }}
         send_resolved: true
     webhook_configs:
       - url: http://webhook-logger:5001/critical
@@ -42,11 +43,12 @@ receivers:
   - name: slack-warning
     slack_configs:
       - channel: '#alerts'
-        color: '#FFA500'
-        title: '🟡 WARNING: {{ .GroupLabels.alertname }}'
+        color: '{{ if eq .Status "resolved" }}#36a64f{{ else }}#FFA500{{ end }}'
+        title: '{{ if eq .Status "resolved" }}✅ RESOLVED{{ else }}🟡 WARNING{{ end }}: {{ .GroupLabels.alertname }}'
         text: |
           *Summary:* {{ .CommonAnnotations.summary }}
           *Detail:* {{ .CommonAnnotations.description }}
+          *Status:* {{ .Status | toUpper }}
         send_resolved: true
     webhook_configs:
       - url: http://webhook-logger:5001/warning

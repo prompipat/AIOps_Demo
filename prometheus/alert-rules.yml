@@ -6,9 +6,9 @@ groups:
       - alert: HighPaymentErrorRate
         expr: |
           (
-            rate(aiops_lab_charges_total{status="failed"}[2m])
+            sum(rate(aiops_lab_charges_total{status="failed"}[2m]))
             /
-            rate(aiops_lab_charges_total[2m])
+            sum(rate(aiops_lab_charges_total[2m]))
           ) * 100 > 25
         for: 1m
         labels:
@@ -16,7 +16,7 @@ groups:
           team: payments
         annotations:
           summary: "Payment error rate สูงผิดปกติ"
-          description: "Error rate อยู่ที่ {{ humanize $value }}% (threshold 25%)"
+          description: "Error rate อยู่ที่ {{ printf \"%.1f\" $value }}% (threshold 25%)"
 
       - alert: HighAPILatency
         expr: |
@@ -29,11 +29,11 @@ groups:
           team: platform
         annotations:
           summary: "API latency p99 สูงเกิน 800ms"
-          description: "p99 latency อยู่ที่ {{ humanize $value }}ms"
+          description: "p99 latency อยู่ที่ {{ printf \"%.0f\" $value }}ms"
 
       - alert: PaymentServiceDown
         expr: |
-          rate(aiops_lab_charges_total[1m]) == 0
+          sum(rate(aiops_lab_charges_total[1m])) == 0
         for: 1m
         labels:
           severity: critical
@@ -45,9 +45,9 @@ groups:
       - alert: LowOrderSuccessRate
         expr: |
           (
-            rate(aiops_lab_orders_created_total{status="success"}[2m])
+            sum(rate(aiops_lab_orders_created_total{status="success"}[2m]))
             /
-            rate(aiops_lab_orders_created_total[2m])
+            sum(rate(aiops_lab_orders_created_total[2m]))
           ) * 100 < 70
         for: 2m
         labels:
@@ -55,4 +55,4 @@ groups:
           team: orders
         annotations:
           summary: "Order success rate ต่ำกว่า 70%"
-          description: "Success rate อยู่ที่ {{ humanize $value }}%"
+          description: "Success rate อยู่ที่ {{ printf \"%.1f\" $value }}%"
