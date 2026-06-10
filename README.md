@@ -1,41 +1,60 @@
 # AIOps Lab
 
-AIOps Lab is a Docker Compose demo for application observability across traces, metrics, logs, dashboards, and alerting.
+AIOps Lab is a local Docker Compose demo for observability and AI-assisted incident response.
+
+It combines:
+
+- distributed tracing
+- metrics and alerting
+- centralized logs
+- Grafana dashboards
+- AI analysis with Groq free tier
+- Slack notifications with recommended next actions
 
 The core request path is:
 
 `load-generator -> api-gateway -> order-service -> payment-service`
 
-Each service emits OpenTelemetry traces and metrics. Logs are shipped with Promtail to Loki, Prometheus scrapes the OpenTelemetry Collector, Grafana reads from Prometheus and Loki, and Alertmanager is wired into Prometheus alerting.
+Each service emits telemetry with OpenTelemetry. Prometheus evaluates alert rules, Alertmanager routes alerts to the AI remediation agent, and the agent uses Groq to analyze the issue, identify the most likely root cause, and recommend the next action.
 
-## What's Included
+## What This Project Does
 
-- Three Node.js services: `api-gateway`, `order-service`, and `payment-service`
-- An OpenTelemetry Collector for traces and metrics
-- Prometheus for metrics scraping and alerting
-- Grafana dashboards and data sources
-- Loki and Promtail for logs
-- Alertmanager for alerts
-- Jaeger for trace visualization
-- A webhook logger for alert delivery demos
-- A built-in load generator that drives the demo automatically
+- Simulates a small e-commerce style request flow
+- Generates traces, metrics, and logs for observability practice
+- Triggers alerts from Prometheus when service health degrades
+- Sends alert payloads to an AI remediation agent
+- Uses Groq LLM to produce:
+  - root cause analysis
+  - confidence score
+  - prioritized remediation actions
+- Posts the analysis to Slack for human review
+
+## AI Features
+
+The AI remediation agent currently supports:
+
+- root cause analysis from alert context
+- next-action recommendations ordered by priority
+- confidence scoring for the diagnosis
+- Slack approval flow for recommended remediation
+
+Groq is used through the `groq-sdk` package with the `llama-3.1-8b-instant` model.
+If Groq is unavailable or the API key is missing, the agent falls back to a simple non-AI response so alert handling still continues.
 
 ## Architecture
 
-The system is designed as a small distributed application with an observability stack wrapped around it.
-
-- `load-generator` creates a steady stream of traffic and short bursts for spike testing
-- `api-gateway` receives requests and forwards them to `order-service`
+- `load-generator` sends requests into the demo automatically
+- `api-gateway` accepts orders and forwards them to `order-service`
 - `order-service` simulates business processing and calls `payment-service`
 - `payment-service` simulates payment handling and intermittent failures
-- `otel-collector` receives telemetry from the services and exports metrics for Prometheus
-- `prometheus` scrapes the collector and evaluates alert rules
-- `grafana` visualizes metrics and logs
-- `loki` stores logs shipped by `promtail`
-- `alertmanager` receives alerts from Prometheus and routes them to the configured receiver
-- `jaeger` provides trace visibility for the full request chain
-
-This layout is useful for practicing incident response because failures can be introduced at different layers while still keeping the data flow understandable.
+- `otel-collector` receives telemetry from the services
+- `prometheus` scrapes metrics and evaluates alert rules
+- `grafana` displays dashboards for metrics and logs
+- `loki` stores logs and `promtail` ships container logs into it
+- `alertmanager` routes alerts to `ai-remediation-agent`
+- `ai-remediation-agent` receives alerts, analyzes them with Groq, and sends recommendations to Slack
+- `jaeger` provides distributed trace visibility
+- `webhook-logger` is available for alert delivery demos
 
 ## Project Structure
 
@@ -43,128 +62,100 @@ This layout is useful for practicing incident response because failures can be i
 .
 |-- api-gateway/
 |   |-- index.js
-|   |-- Dockerfile
-|   |-- package.json
-|   `-- tracing.js
+|   |-- tracing.js
+|   `-- Dockerfile
 |-- order-service/
 |   |-- index.js
-|   |-- Dockerfile
-|   |-- package.json
-|   `-- tracing.js
+|   |-- tracing.js
+|   `-- Dockerfile
 |-- payment-service/
 |   |-- index.js
-|   |-- Dockerfile
-|   |-- package.json
-|   `-- tracing.js
-|-- otel-collector/
-|   `-- otelcol-config.yml
-|-- prometheus/
-|   |-- prometheus.yml
-|   `-- alert-rules.yml
-|-- grafana/
-|   `-- provisioning/
-|-- alertmanager/
-|   |-- alertmanager.yml
-|   `-- start.sh
-|-- promtail/
-|   `-- promtail-config.yml
-|-- webhook-logger/
-|   |-- server.js
+|   |-- tracing.js
 |   `-- Dockerfile
+|-- ai-remediation-agent/
+|   |-- Dockerfile
+|   |-- index.js
+|   |-- groq-analyzer.js
+|   `-- slack-bot.js
+|-- otel-collector/otel-config.yml
+|-- prometheus/
+|   |-- alert-rules.yml
+|   `-- prometheus.yml
+|-- grafana/provisioning/
+|   |-- dashboards/dashboard.yml
+|   `-- datasources/datasources.yml
+|-- alertmanager/alertmanager.yml
+|-- promtail/promtail-config.yml
+|-- webhook-logger/
+|   |-- Dockerfile
+|   `-- server.js
 |-- load-generator.js
 `-- docker-compose.yml
 ```
 
-## Tools
+## Services
 
-| Tool | Purpose |
-| --- | --- |
-| Docker Compose | Starts the full lab with one command |
-| Node.js | Runs the three application services and the load generator |
-| OpenTelemetry SDK | Creates traces and metrics in each service |
-| OpenTelemetry Collector | Receives OTLP telemetry and exposes Prometheus metrics |
-| Prometheus | Scrapes telemetry metrics and evaluates alert rules |
-| Grafana | Displays dashboards for metrics and logs |
-| Loki | Stores container logs |
-| Promtail | Ships Docker logs into Loki |
-| Alertmanager | Handles alert delivery and routing |
-| Jaeger | Lets you inspect distributed traces |
-| webhook-logger | Receives demo alert webhooks for validation |
+| Service | Purpose | Port |
+| --- | --- | --- |
+| `api-gateway` | Accepts order requests and forwards them downstream | `3000` |
+| `order-service` | Processes orders and calls payment | `3001` |
+| `payment-service` | Simulates payment charging with failure cases | `3002` |
+| `ai-remediation-agent` | Receives alerts and runs Groq analysis | `3003` |
+| `otel-collector` | Receives OTLP telemetry and exposes Prometheus metrics | `4317`, `4318`, `8889` |
+| `prometheus` | Scrapes metrics and evaluates alert rules | `9090` |
+| `grafana` | Dashboard UI | `3030` |
+| `loki` | Log storage | `3100` |
+| `promtail` | Ships logs to Loki | internal |
+| `alertmanager` | Routes alerts to the AI remediation agent | `9093` |
+| `jaeger` | Trace UI | `16686` |
+| `webhook-logger` | Demo webhook receiver | `5001` |
 
-## Incident Scenarios
+## Alert Flow
 
-The demo is intended to help test common observability and incident-response cases:
+1. A request enters `api-gateway`.
+2. The gateway calls `order-service`.
+3. `order-service` calls `payment-service`.
+4. Services emit metrics, traces, and logs.
+5. Prometheus evaluates alert rules.
+6. Alertmanager sends firing alerts to `http://ai-remediation-agent:3003/alerts`.
+7. The AI agent extracts alert context and sends it to Groq.
+8. Groq returns:
+   - the most likely root cause
+   - a confidence score
+   - three prioritized remediation actions
+9. The agent posts the analysis to Slack for human approval.
 
-1. `payment-service` failures: Simulates a payment decline roughly 15% of the time, which is useful for checking error traces, failed request counts, and alert visibility.
-2. Latency spikes in the request chain: Each service adds a small processing delay, which helps validate trace timing, service-to-service breakdowns, and slow request detection.
-3. Collector or telemetry disruption: If the OpenTelemetry Collector is unavailable, metrics and traces stop flowing, which helps verify that missing telemetry is visible in dashboards and logs.
-4. Prometheus scrape or alerting issues: If scraping fails, dashboards and alert rules go stale, which is useful for checking whether alerting and data freshness are being monitored.
-5. Log pipeline failures: If Promtail or Loki is unavailable, logs stop appearing in Grafana, which helps validate log-loss detection and troubleshooting workflows.
-6. Traffic surge from the load generator: The built-in burst helps simulate sudden load increases, which is useful for observing spikes in latency, error rates, and service saturation.
+## Prometheus Alert Rules
 
-## Full Pipeline Diagram
+The current rules include:
 
-```mermaid
-flowchart LR
-  subgraph Traffic
-    LG[load-generator]
-  end
+- `HighPaymentErrorRate`
+- `HighAPILatency`
+- `PaymentServiceDown`
+- `LowOrderSuccessRate`
 
-  subgraph App["Application Services"]
-    GW[api-gateway]
-    OS[order-service]
-    PS[payment-service]
-  end
-
-  subgraph Telemetry["Telemetry and Data Plane"]
-    OTel[otel-collector]
-    Prom[prometheus]
-    Graf[grafana]
-    Loki[loki]
-    Promtail[promtail]
-    AM[alertmanager]
-    J[jaeger]
-    WL[webhook-logger]
-  end
-
-  LG -->|POST /order| GW
-  GW -->|POST /create| OS
-  OS -->|POST /charge| PS
-
-  GW -->|OTLP traces/metrics| OTel
-  OS -->|OTLP traces/metrics| OTel
-  PS -->|OTLP traces/metrics| OTel
-
-  OTel -->|Prometheus metrics| Prom
-  Prom --> Graf
-  Prom --> AM
-  AM --> WL
-
-  Promtail --> Loki
-  Loki --> Graf
-
-  OTel --> J
-```
+These alerts are a good way to test the AI workflow because they provide enough context for Groq to suggest a likely cause and the next action to take.
 
 ## Quick Start
 
-1. Start everything from the project root:
+1. Start the full stack:
 
 ```bash
 docker compose up --build -d
 ```
 
-2. Wait for the services to finish booting. The load generator starts automatically and begins sending traffic after startup.
+2. Wait for the containers to boot.
 
-3. Verify the application is healthy:
+3. Check service health:
 
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3001/health
 curl http://localhost:3002/health
+curl http://localhost:3003/health
 ```
 
-4. Generate a manual request if you want to test the full chain yourself:
+4. Send a manual request:
 
 ```bash
 curl -X POST http://localhost:3000/order \
@@ -172,22 +163,46 @@ curl -X POST http://localhost:3000/order \
   -d '{"item":"laptop","quantity":2,"userId":"user-001"}'
 ```
 
-## Service Map
+## AI Setup
 
-| Service | Purpose | Port(s) | Notes |
-| --- | --- | --- | --- |
-| `api-gateway` | Accepts order requests and forwards them to the order service | `3000` | Exposes `POST /order` and `GET /health` |
-| `order-service` | Processes orders and calls the payment service | `3001` | Exposes `POST /create` and `GET /health` |
-| `payment-service` | Simulates payment charging with a failure rate | `3002` | Exposes `POST /charge` and `GET /health` |
-| `otel-collector` | Receives OTLP telemetry and exposes Prometheus metrics | `4317`, `4318`, `8889` | Prometheus scrapes `otel-collector:8889` |
-| `prometheus` | Scrapes the collector and evaluates alert rules | `9090` | Alertmanager is configured as the alert target |
-| `grafana` | Visualization UI | `3030` | Anonymous access is enabled |
-| `loki` | Log storage | `3100` | Used by Grafana and Promtail |
-| `promtail` | Ships container logs to Loki | `9080` | Internal service port only |
-| `alertmanager` | Receives alerts from Prometheus | `9093` | Uses config from `alertmanager/alertmanager.yml` |
-| `webhook-logger` | Receives webhook notifications for demo alerts | `5001` | Useful for verifying alert delivery |
-| `jaeger` | Trace UI | `16686` | Collector endpoint exposed on `14250` |
-| `load-generator` | Sends traffic into the gateway | none | Runs inside the Compose network |
+The AI layer uses the Groq free tier plus Slack.
+
+### 1. Groq API Key
+
+Create a Groq account and add this to your `.env` file:
+
+```bash
+GROQ_API_KEY=gsk_your_api_key_here
+```
+
+### 2. Slack App
+
+Create a Slack app and add:
+
+```bash
+SLACK_BOT_TOKEN=xoxb-your-token
+SLACK_SIGNING_SECRET=your-signing-secret
+SLACK_CHANNEL_ID=your-channel-id
+```
+
+The agent posts formatted alert analysis to Slack and includes buttons for approve/reject workflow.
+
+### 3. Restart the AI Agent
+
+```bash
+docker compose up --build -d ai-remediation-agent
+```
+
+## Example AI Output
+
+For a firing alert, the agent aims to produce output like this:
+
+- root cause: most likely failure source for the alert
+- confidence: percentage confidence score
+- recommended actions:
+  1. restart the failing service
+  2. check recent logs
+  3. inspect metrics for saturation or latency
 
 ## Useful URLs
 
@@ -195,7 +210,9 @@ curl -X POST http://localhost:3000/order \
 - API Gateway health: `http://localhost:3000/health`
 - Order Service health: `http://localhost:3001/health`
 - Payment Service health: `http://localhost:3002/health`
+- AI Remediation Agent health: `http://localhost:3003/health`
 - Prometheus: `http://localhost:9090`
+- Prometheus alerts: `http://localhost:9090/alerts`
 - Grafana: `http://localhost:3030`
 - Loki: `http://localhost:3100`
 - Alertmanager: `http://localhost:9093`
@@ -203,73 +220,54 @@ curl -X POST http://localhost:3000/order \
 - Webhook logger: `http://localhost:5001`
 - Collector metrics: `http://localhost:8889/metrics`
 
-## Request Flow
+## Request Pattern
 
-1. The load generator sends a request to `POST /order` every 2 seconds.
-2. After a 5 second warm-up, it sends a burst of 10 extra requests.
-3. The API gateway forwards the request to `order-service`.
-4. The order service simulates processing, then calls `payment-service`.
-5. The payment service simulates latency and returns either success or a failure.
-6. Telemetry is exported to the collector and becomes visible in Prometheus, Grafana, and Jaeger.
+The built-in load generator:
 
-## Observability Data Flow
+- sends one request every 2 seconds
+- starts a burst of 10 extra requests after a 5 second warm-up
 
-- Traces and metrics are exported from the services to the OpenTelemetry Collector over OTLP gRPC on `4317`
-- The collector exposes Prometheus-format metrics on `8889`
-- Prometheus scrapes `otel-collector:8889` every 10 seconds
-- Grafana uses Prometheus as its default metrics data source
-- Grafana also has Loki configured for log exploration
-- Promtail forwards Docker container logs to Loki
+This keeps the demo active enough to populate dashboards and produce occasional alert activity.
 
-## Expected Behavior
+## Observability Flow
 
-When the stack is healthy and traffic is flowing, you should see:
-
-- `docker compose ps` shows the core services running
-- `curl http://localhost:3000/health` returns a healthy JSON response
-- `http://localhost:8889/metrics` includes metrics after traffic starts
-- Grafana shows service metrics and logs
-- Jaeger shows spans for the request chain
+- services export traces and metrics to the OpenTelemetry Collector over OTLP gRPC on `4317`
+- the collector exposes Prometheus-format metrics on `8889`
+- Prometheus scrapes the collector on a regular interval
+- Grafana reads from Prometheus and Loki
+- Promtail forwards Docker logs to Loki
+- Alertmanager sends alert webhooks to the AI remediation agent
+- the AI agent uses Groq to analyze the alert and recommend the next action
 
 ## Troubleshooting
 
-### `/metrics` looks empty
+### No AI analysis in Slack
 
-- Make sure the load generator is running
-- Send a manual request to `POST /order`
-- Check that `otel-collector` is healthy and not restarting
+- check that `GROQ_API_KEY` is set
+- check Slack credentials in `.env`
+- confirm `ai-remediation-agent` is running
+- review `docker compose logs -f ai-remediation-agent`
 
-### Grafana dashboards are empty
+### Alerts are not firing
 
-- Verify Prometheus is available at `http://localhost:9090`
-- Confirm the collector is being scraped at `otel-collector:8889`
-- Check that the services are actually receiving requests
+- make sure the load generator is running
+- send a manual `POST /order` request
+- verify Prometheus is scraping the collector
 
-### Logs do not appear in Loki
+### Grafana looks empty
 
-- Confirm Promtail is running
-- Check that Docker socket access is available inside the Promtail container
-- Verify the Grafana Loki data source is enabled
+- confirm Prometheus is reachable at `http://localhost:9090`
+- confirm Loki is running
+- make sure the services are receiving traffic
 
 ### Services cannot reach each other
 
 - `api-gateway` calls `order-service:3001`
 - `order-service` calls `payment-service:3002`
-- All services should be on the same Docker Compose network
-
-### View logs
-
-```bash
-docker compose logs --tail=50 otel-collector
-docker compose logs --tail=50 api-gateway
-docker compose logs --tail=50 order-service
-docker compose logs --tail=50 payment-service
-docker compose logs --tail=50 prometheus
-docker compose logs --tail=50 grafana
-```
+- all services should share the same Docker Compose network
 
 ## Notes
 
-- `payment-service` simulates roughly a 15% failure rate
-- The demo is meant for local observability practice, not production use
-- If you change any service code or configuration, rebuild the stack with `docker compose up --build`
+- `payment-service` simulates failures so alerting can be tested
+- the project is intended for local observability and AIOps practice, not production use
+- if you change code or config, rebuild with `docker compose up --build`

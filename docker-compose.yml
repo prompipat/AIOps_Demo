@@ -105,3 +105,21 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=true
+  
+  ai-remediation-agent:
+    build: ./ai-remediation-agent
+    ports:
+      - "3003:3003"
+    depends_on:
+      - alertmanager
+      - prometheus
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - ALERTMANAGER_URL=http://alertmanager:9093
+      - PROMETHEUS_URL=http://prometheus:9090
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - default
