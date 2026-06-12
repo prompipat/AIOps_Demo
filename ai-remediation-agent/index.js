@@ -13,6 +13,30 @@ app.use(bodyParser.json());
 
 const bolt = initSlackBot();
 
+function resolveServiceFromAlert(alert) {
+    const labels = alert.labels || {};
+    if (labels.service) {
+        return labels.service;
+    }
+
+    const alertname = labels.alertname || '';
+    const team = labels.team || '';
+
+    if (alertname.includes('Payment') || team === 'payments') {
+        return 'payment-service';
+    }
+
+    if (alertname.includes('Order') || team === 'orders') {
+        return 'order-service';
+    }
+
+    if (alertname.includes('API') || team === 'platform') {
+        return 'api-gateway';
+    }
+
+    return 'unknown';
+}
+
 // Health Check
 app.get('/health', (req, res) => {
     res.json({status: 'ok', service: 'ai-remediation-agent'});
@@ -32,7 +56,7 @@ app.post('/alerts', async(req, res) => {
                 const alertContext = {
                     name: alert.labels.alertname,
                     severity: alert.labels.severity || 'unknown',
-                    service: alert.labels.service || 'unknown',
+                    service: resolveServiceFromAlert(alert),
                     instance: alert.labels.instance || 'unknown',
                     description: alert.annotations.description || '',
                     summary: alert.annotations.summary || '',
