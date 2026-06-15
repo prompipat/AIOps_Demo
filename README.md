@@ -15,7 +15,7 @@ The core request path is:
 
 `load-generator -> api-gateway -> order-service -> payment-service`
 
-Each service emits telemetry with OpenTelemetry. Prometheus evaluates alert rules, Alertmanager routes alerts to the AI remediation agent, and the agent uses Groq to analyze the issue, identify the most likely root cause, and recommend the next action.
+Each service emits telemetry with OpenTelemetry. Prometheus evaluates alert rules, Alertmanager routes alerts to the AI remediation agent, and the agent enriches each alert with Prometheus metrics, Loki logs, and Jaeger traces before sending one combined evidence bundle to Groq.
 
 ## What This Project Does
 
@@ -27,13 +27,17 @@ Each service emits telemetry with OpenTelemetry. Prometheus evaluates alert rule
   - root cause analysis
   - confidence score
   - prioritized remediation actions
+  - evidence-based incident summaries
 - Posts the analysis to Slack for human review
 
 ## AI Features
 
 The AI remediation agent currently supports:
 
-- root cause analysis from alert context
+- root cause analysis from alert context plus evidence enrichment
+- Prometheus metric snapshots and trend summaries
+- Loki log correlation using `trace_id`
+- Jaeger trace lookup using linked trace IDs
 - next-action recommendations ordered by priority
 - confidence scoring for the diagnosis
 - Slack approval flow for recommended remediation
@@ -52,7 +56,7 @@ If Groq is unavailable or the API key is missing, the agent falls back to a simp
 - `grafana` displays dashboards for metrics and logs
 - `loki` stores logs and `promtail` ships container logs into it
 - `alertmanager` routes alerts to `ai-remediation-agent`
-- `ai-remediation-agent` receives alerts, analyzes them with Groq, and sends recommendations to Slack
+- `ai-remediation-agent` receives alerts, enriches them with metrics/logs/traces, analyzes them with Groq, and sends recommendations to Slack
 - `jaeger` provides distributed trace visibility
 - `webhook-logger` is available for alert delivery demos
 
@@ -100,7 +104,7 @@ If Groq is unavailable or the API key is missing, the agent falls back to a simp
 | `api-gateway` | Accepts order requests and forwards them downstream | `3000` |
 | `order-service` | Processes orders and calls payment | `3001` |
 | `payment-service` | Simulates payment charging with failure cases | `3002` |
-| `ai-remediation-agent` | Receives alerts and runs Groq analysis | `3003` |
+| `ai-remediation-agent` | Receives alerts, enriches evidence, and runs Groq analysis | `3003` |
 | `otel-collector` | Receives OTLP telemetry and exposes Prometheus metrics | `4317`, `4318`, `8889` |
 | `prometheus` | Scrapes metrics and evaluates alert rules | `9090` |
 | `grafana` | Dashboard UI | `3030` |
@@ -118,12 +122,16 @@ If Groq is unavailable or the API key is missing, the agent falls back to a simp
 4. Services emit metrics, traces, and logs.
 5. Prometheus evaluates alert rules.
 6. Alertmanager sends firing alerts to `http://ai-remediation-agent:3003/alerts`.
-7. The AI agent extracts alert context and sends it to Groq.
-8. Groq returns:
+7. The AI agent enriches the alert with:
+   - Prometheus metric snapshots and trend data
+   - Loki logs from the incident window
+   - Jaeger traces linked by `trace_id`
+8. The AI agent sends the combined evidence bundle to Groq.
+9. Groq returns:
    - the most likely root cause
    - a confidence score
    - three prioritized remediation actions
-9. The agent posts the analysis to Slack for human approval.
+10. The agent posts the analysis and evidence summary to Slack for human approval.
 
 ## Prometheus Alert Rules
 
@@ -135,6 +143,7 @@ The current rules include:
 - `LowOrderSuccessRate`
 
 These alerts are a good way to test the AI workflow because they provide enough context for Groq to suggest a likely cause and the next action to take.
+The current AI workflow is strongest when the alert maps cleanly to a service, because the agent can then pull the right metrics, logs, and traces for that service.
 
 ## Quick Start
 
@@ -186,6 +195,7 @@ SLACK_CHANNEL_ID=your-channel-id
 ```
 
 The agent posts formatted alert analysis to Slack and includes buttons for approve/reject workflow.
+The Slack card also shows evidence summaries, correlated signals, missing signals, and trace IDs used in the analysis.
 
 ### 3. Restart the AI Agent
 
@@ -199,6 +209,8 @@ For a firing alert, the agent aims to produce output like this:
 
 - root cause: most likely failure source for the alert
 - confidence: percentage confidence score
+- evidence used: metrics, logs, and traces that support the diagnosis
+- trace IDs: linked trace IDs found in Loki and resolved in Jaeger
 - recommended actions:
   1. restart the failing service
   2. check recent logs
@@ -234,10 +246,11 @@ This keeps the demo active enough to populate dashboards and produce occasional 
 - services export traces and metrics to the OpenTelemetry Collector over OTLP gRPC on `4317`
 - the collector exposes Prometheus-format metrics on `8889`
 - Prometheus scrapes the collector on a regular interval
-- Grafana reads from Prometheus and Loki
 - Promtail forwards Docker logs to Loki
+- Grafana reads from Prometheus and Loki
 - Alertmanager sends alert webhooks to the AI remediation agent
-- the AI agent uses Groq to analyze the alert and recommend the next action
+- the AI agent pulls Prometheus snapshots, Loki logs, and Jaeger traces, then sends one evidence bundle to Groq
+- log records include `trace_id` and `span_id` so Loki entries can be correlated back to Jaeger traces
 
 ## Troubleshooting
 

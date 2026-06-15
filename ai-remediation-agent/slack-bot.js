@@ -2,36 +2,49 @@ const { App } = require('@slack/bolt');
 const SLACK_CHANNEL_ID = process.env.SLACK_CHANNEL_ID || '#alerts';
 
 function initSlackBot() {
-  const app = new App({
+  return new App({
     token: process.env.SLACK_BOT_TOKEN,
     signingSecret: process.env.SLACK_SIGNING_SECRET
   });
-
-  return app;
 }
 
 async function sendSlackMessage(message, bolt) {
   try {
     await bolt.client.chat.postMessage({
-      channel: '#alerts',
+      channel: SLACK_CHANNEL_ID,
       text: message
     });
-    console.log('✅ Message sent to Slack');
+    console.log('Message sent to Slack');
   } catch (error) {
-    console.error('❌ Failed to send Slack message:', error);
+    console.error('Failed to send Slack message:', error);
   }
+}
+
+function formatEvidenceLines(items, fallback = 'none') {
+  if (!Array.isArray(items) || items.length === 0) {
+    return fallback;
+  }
+
+  return items
+    .slice(0, 5)
+    .map((item) => `- ${item}`)
+    .join('\n');
 }
 
 async function sendSlackApproval(alertContext, analysis, bolt) {
   try {
     const primaryAction = analysis.recommendedActions[0];
-    
+    const evidenceUsed = analysis.evidenceUsed || {};
+    const correlatedSignals = analysis.correlatedSignals || [];
+    const missingSignals = analysis.missingSignals || [];
+    const traceIds = analysis.traceIds || [];
+
     const blocks = [
       {
         type: 'header',
         text: {
           type: 'plain_text',
-          text: `🚨 Alert: ${alertContext.name}`,
+          text: `Alert: ${alertContext.name}`,
           emoji: true
         }
       },
@@ -49,7 +62,7 @@ async function sendSlackApproval(alertContext, analysis, bolt) {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*🤖 AI Analysis*\n*Root Cause:* ${analysis.rootCause}\n*Confidence:* ${analysis.confidence}%`
+          text: `*AI Analysis*\n*Root Cause:* ${analysis.rootCause}\n*Confidence:* ${analysis.confidence}%`
         }
       },
       {
@@ -58,10 +71,47 @@ async function sendSlackApproval(alertContext, analysis, bolt) {
           type: 'mrkdwn',
           text: `*Recommended Actions:*`
         }
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Evidence Used*\n*Metrics:*\n${formatEvidenceLines(evidenceUsed.metrics)}\n*Logs:*\n${formatEvidenceLines(evidenceUsed.logs)}\n*Traces:*\n${formatEvidenceLines(evidenceUsed.traces)}`
+        }
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Trace IDs*\n${formatEvidenceLines(traceIds)}`
+        }
       }
     ];
 
-    // Add action buttons
+    if (correlatedSignals.length > 0) {
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Correlated Signals*\n${formatEvidenceLines(correlatedSignals)}`
+        }
+      });
+    }
+
+    if (missingSignals.length > 0) {
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Missing Signals*\n${formatEvidenceLines(missingSignals)}`
+        }
+      });
+    }
+
+    blocks.push({
+      type: 'divider'
+    });
+
     analysis.recommendedActions.forEach((action, index) => {
       blocks.push({
         type: 'section',
@@ -79,7 +129,7 @@ async function sendSlackApproval(alertContext, analysis, bolt) {
           type: 'button',
           text: {
             type: 'plain_text',
-            text: '✅ Approve & Execute',
+            text: 'Approve & Execute',
             emoji: true
           },
           value: JSON.stringify({
@@ -94,7 +144,7 @@ async function sendSlackApproval(alertContext, analysis, bolt) {
           type: 'button',
           text: {
             type: 'plain_text',
-            text: '❌ Reject',
+            text: 'Reject',
             emoji: true
           },
           value: JSON.stringify({
@@ -107,14 +157,14 @@ async function sendSlackApproval(alertContext, analysis, bolt) {
     });
 
     await bolt.client.chat.postMessage({
-      channel: '#alerts',
-      blocks: blocks,
+      channel: SLACK_CHANNEL_ID,
+      blocks,
       text: `Alert: ${alertContext.name} requires remediation`
     });
 
-    console.log('✅ Approval message sent to Slack');
+    console.log('Approval message sent to Slack');
   } catch (error) {
-    console.error('❌ Failed to send approval message to Slack:', error);
+    console.error('Failed to send approval message to Slack:', error);
     throw error;
   }
 }

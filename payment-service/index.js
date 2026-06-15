@@ -16,22 +16,23 @@ const revenueCounter = meter.createCounter('revenue.total', {
 });
 const chargeLatency = meter.createHistogram('charge.duration', { unit: 'ms' });
 
-// จำลอง failure 15% ของ request
-const FAILURE_RATE = 0.15;
+const FAILURE_RATE = 0.85;
+
+function buildLog(service, level, msg, extra = {}, span = null) {
+  const spanContext = span?.spanContext?.() || null;
+  return JSON.stringify({
+    service,
+    level,
+    msg,
+    trace_id: spanContext?.traceId || null,
+    span_id: spanContext?.spanId || null,
+    ...extra
+  });
+}
 
 app.post('/charge', async (req, res) => {
   const start = Date.now();
   const { orderId, amount, userId } = req.body;
-  console.log(JSON.stringify({
-    service: 'payment-service',
-    level: 'info',
-    msg: 'received charge request',
-    route: '/charge',
-    method: 'POST',
-    orderId,
-    amount,
-    currency: 'THB'
-  }))
 
   const span = tracer.startSpan('charge-payment');
   span.setAttributes({
@@ -41,29 +42,32 @@ app.post('/charge', async (req, res) => {
     'user.id': userId,
   });
 
-  // จำลอง processing time 100–300ms
-  await new Promise(r => setTimeout(r, 100 + Math.random() * 200));
+  console.log(buildLog('payment-service', 'info', 'received charge request', {
+    route: '/charge',
+    method: 'POST',
+    orderId,
+    amount,
+    currency: 'THB'
+  }, span));
+
+  await new Promise((resolve) => setTimeout(resolve, 100 + Math.random() * 200));
 
   if (Math.random() < FAILURE_RATE) {
-    // จำลอง payment failure
     chargeCounter.add(1, { status: 'failed', reason: 'insufficient_funds' });
     span.recordException(new Error('Payment declined: insufficient funds'));
     span.setStatus({ code: 2, message: 'payment_failed' });
     span.end();
     chargeLatency.record(Date.now() - start, { status: 'failed' });
-    console.error(JSON.stringify({
-        service: 'payment-service',
-        level: 'error',
-        msg: 'charge failed',
-        route: '/charge',
-        method: 'POST',
-        orderId,
-        amount,
-        currency: 'THB',
-        status: 'failed',
-        reason: 'insufficient_funds',
-        duration_ms: Date.now() - start
-    }))
+    console.error(buildLog('payment-service', 'error', 'charge failed', {
+      route: '/charge',
+      method: 'POST',
+      orderId,
+      amount,
+      currency: 'THB',
+      status: 'failed',
+      reason: 'insufficient_funds',
+      duration_ms: Date.now() - start
+    }, span));
     return res.status(402).json({ success: false, reason: 'insufficient_funds' });
   }
 
@@ -73,18 +77,17 @@ app.post('/charge', async (req, res) => {
   span.setStatus({ code: 1 });
   span.end();
   chargeLatency.record(Date.now() - start, { status: 'success' });
-  console.log(JSON.stringify({
-    service: 'payment-service',
-    level: 'info',
-    msg: 'charge succeeded',
+
+  console.log(buildLog('payment-service', 'info', 'charge succeeded', {
     route: '/charge',
+    method: 'POST',
     orderId,
     amount,
     currency: 'THB',
     status: 'success',
     transactionId,
     duration_ms: Date.now() - start
-  }))
+  }, span));
 
   res.json({ success: true, transactionId, amount });
 });

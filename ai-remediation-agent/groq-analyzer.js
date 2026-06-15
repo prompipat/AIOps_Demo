@@ -1,6 +1,256 @@
 const { Groq } = require('groq-sdk');
 
-async function analyzeAlert(alertContext) {
+const MAX_PROMPT_CHARS = Number(process.env.GROQ_PROMPT_MAX_CHARS || 12000);
+const MAX_TEXT_CHARS = Number(process.env.GROQ_TEXT_MAX_CHARS || 240);
+const MAX_METRIC_SNAPSHOT = Number(process.env.GROQ_MAX_METRIC_SNAPSHOT || 4);
+const MAX_LOG_ENTRIES = Number(process.env.GROQ_MAX_LOG_ENTRIES || 3);
+const MAX_TRACE_SUMMARIES = Number(process.env.GROQ_MAX_TRACE_SUMMARIES || 3);
+const MAX_SPAN_DETAILS = Number(process.env.GROQ_MAX_SPAN_DETAILS || 4);
+const MAX_ARRAY_ITEMS = Number(process.env.GROQ_MAX_ARRAY_ITEMS || 6);
+
+function limitText(value, maxChars = MAX_TEXT_CHARS) {
+  if (typeof value !== 'string') {
+    return value ?? null;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
+
+  return `${trimmed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function limitArray(items = [], maxItems = MAX_ARRAY_ITEMS) {
+  return Array.isArray(items) ? items.slice(0, maxItems) : [];
+}
+
+function pickMetricSnapshot(snapshot = []) {
+  return limitArray(snapshot, MAX_METRIC_SNAPSHOT)
+    .filter((item) => item && item.result && item.result.length > 0)
+    .map((item) => ({
+      name: limitText(item.name, 80),
+      query: limitText(item.query, 120),
+      value: item.result[0].value,
+      labels: item.result[0].labels || {},
+      timestamp: item.result[0].timestamp || null
+    }));
+}
+
+function pickLogEntries(entries = []) {
+  return limitArray(entries, MAX_LOG_ENTRIES)
+    .filter(Boolean)
+    .map((entry) => ({
+      timestamp: entry.timestamp || null,
+      level: entry.level || null,
+      msg: limitText(entry.msg || entry.error || entry.reason || entry.raw || ''),
+      status: entry.status || null,
+      reason: limitText(entry.reason || null),
+      duration_ms: entry.duration_ms ?? null,
+      trace_id: limitText(entry.trace_id || null, 80)
+    }));
+}
+
+function pickTraceSummaries(traces = []) {
+  return limitArray(traces, MAX_TRACE_SUMMARIES)
+    .filter(Boolean)
+    .map((trace) => ({
+      traceID: limitText(trace.traceID || null, 80),
+      duration_ms: trace.duration_ms ?? null,
+      spanCount: trace.spanCount ?? null,
+      errorSpanCount: trace.errorSpanCount ?? null,
+      operationNames: limitArray(trace.operationNames || [], MAX_ARRAY_ITEMS).map((name) => limitText(name, 80)),
+      spanDetails: limitArray(trace.spanDetails || [], MAX_SPAN_DETAILS).map((span) => ({
+        spanID: limitText(span.spanID || null, 80),
+        parentSpanID: limitText(span.parentSpanID || null, 80),
+        operationName: limitText(span.operationName || null, 120),
+        serviceName: limitText(span.serviceName || null, 120),
+        duration_ms: span.duration_ms ?? null
+      }))
+    }));
+}
+
+function compactAlertContext(alertContext = {}) {
+  return {
+    name: limitText(alertContext.name, 120),
+    severity: limitText(alertContext.severity, 40),
+    service: limitText(alertContext.service, 80),
+    instance: limitText(alertContext.instance, 80),
+    description: limitText(alertContext.description, 240),
+    summary: limitText(alertContext.summary, 240),
+    startsAt: alertContext.startsAt || null,
+    endsAt: alertContext.endsAt || null
+  };
+}
+
+function buildEvidenceSection(evidence) {
+  if (!evidence) {
+    return 'No additional evidence was collected.';
+  }
+
+  const cleanEvidence = {
+    alert: compactAlertContext(evidence.alert || {}),
+    metrics: {
+      focus: limitText(evidence.metrics?.focus || null, 80),
+      snapshot: pickMetricSnapshot(evidence.metrics?.snapshot || []),
+      trend: evidence.metrics?.trend?.result
+        ? limitArray(evidence.metrics.trend.result, MAX_ARRAY_ITEMS).map((item) => ({
+            labels: item.labels || {},
+            points: item.points ?? null,
+            first: item.first ?? null,
+            last: item.last ?? null,
+            min: item.min ?? null,
+            max: item.max ?? null
+          }))
+        : null
+    },
+    logs: {
+      totalLines: evidence.logs?.totalLines ?? 0,
+      errorCount: evidence.logs?.errorCount ?? 0,
+      warningCount: evidence.logs?.warningCount ?? 0,
+      topErrors: pickLogEntries(evidence.logs?.topErrors || []),
+      topWarnings: pickLogEntries(evidence.logs?.topWarnings || []),
+      traceIds: limitArray(evidence.logs?.traceIds || [], MAX_ARRAY_ITEMS).map((traceId) => limitText(traceId, 80))
+    },
+    traces: {
+      totalTraces: evidence.traces?.totalTraces ?? 0,
+      traceIds: limitArray(evidence.traces?.traceIds || [], MAX_ARRAY_ITEMS).map((traceId) => limitText(traceId, 80)),
+      linkedTraces: pickTraceSummaries(evidence.traces?.linkedTraces || []),
+      slowestTraces: pickTraceSummaries(evidence.traces?.slowestTraces || [])
+    },
+    correlation: {
+      service: limitText(evidence.correlation?.service || null, 80),
+      alertname: limitText(evidence.correlation?.alertname || null, 120),
+      timeWindow: evidence.correlation?.timeWindow || null,
+      signals: limitArray(evidence.correlation?.signals || [], MAX_ARRAY_ITEMS).map((signal) => limitText(signal, 180))
+    },
+    missingSignals: limitArray(evidence.missingSignals || [], MAX_ARRAY_ITEMS).map((signal) => limitText(signal, 180))
+  };
+
+  return JSON.stringify(cleanEvidence);
+}
+
+function clampPrompt(prompt) {
+  if (prompt.length <= MAX_PROMPT_CHARS) {
+    return prompt;
+  }
+
+  const marker = '\n\n[Evidence truncated to fit prompt budget]\n';
+  const keep = Math.max(0, MAX_PROMPT_CHARS - marker.length);
+  return `${prompt.slice(0, keep)}${marker}`;
+}
+
+function asStringArray(value) {
+  if (Array.isArray(value)) {
+    return value.filter((item) => typeof item === 'string' && item.trim().length > 0);
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    return [value.trim()];
+  }
+
+  return [];
+}
+
+function isMissingLikeSignal(signal) {
+  if (typeof signal !== 'string') {
+    return true;
+  }
+
+  const text = signal.trim();
+  if (!text) {
+    return true;
+  }
+
+  const blockedPatterns = [
+    /unavailable/i,
+    /missing/i,
+    /no trace_id/i,
+    /trend unavailable/i,
+    /logs unavailable/i,
+    /trace unavailable/i,
+    /unable to/i,
+    /not found/i,
+    /failed to collect/i,
+    /still ongoing/i,
+    /service was not functioning/i
+  ];
+
+  return blockedPatterns.some((pattern) => pattern.test(text));
+}
+
+function splitSignals(values) {
+  const items = asStringArray(values);
+  return {
+    kept: items.filter((item) => !isMissingLikeSignal(item)),
+    missing: items.filter((item) => isMissingLikeSignal(item))
+  };
+}
+
+function normalizeAnalysisResponse(analysis, evidence) {
+  const evidenceUsed = analysis.evidenceUsed || {};
+  const metricSignals = splitSignals(evidenceUsed.metrics || analysis.metrics);
+  const logSignals = splitSignals(evidenceUsed.logs || analysis.logs);
+  const traceSignals = splitSignals(evidenceUsed.traces || analysis.traces);
+  const correlatedFromAnalysis = splitSignals([
+    ...asStringArray(analysis.correlatedSignals),
+    ...asStringArray(analysis.correlation),
+    ...asStringArray(evidenceUsed.correlation)
+  ]);
+  const missingSignals = [
+    ...asStringArray(analysis.missingSignals),
+    ...asStringArray(evidenceUsed.missingSignals),
+    ...asStringArray(evidence?.missingSignals),
+    ...metricSignals.missing,
+    ...logSignals.missing,
+    ...traceSignals.missing,
+    ...correlatedFromAnalysis.missing
+  ];
+  const traceIds = asStringArray(analysis.traceIds)
+    .concat(asStringArray(evidence?.traces?.traceIds))
+    .filter((item) => typeof item === 'string' && item.trim().length > 0);
+
+  return {
+    rootCause: analysis.rootCause || 'Unable to determine root cause',
+    confidence: Number.isFinite(Number(analysis.confidence)) ? Number(analysis.confidence) : 0,
+    evidenceUsed: {
+      metrics: metricSignals.kept,
+      logs: logSignals.kept,
+      traces: traceSignals.kept
+    },
+    traceIds: [...new Set(traceIds)],
+    correlatedSignals: [...new Set(correlatedFromAnalysis.kept)],
+    recommendedActions: Array.isArray(analysis.actions) ? analysis.actions : [],
+    missingSignals: [...new Set(missingSignals)]
+  };
+}
+
+function parseGroqJsonResponse(responseText) {
+  if (!responseText || typeof responseText !== 'string') {
+    throw new Error('Empty Groq response');
+  }
+
+  const trimmed = responseText.trim();
+  const withoutFence = trimmed
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '');
+
+  try {
+    return JSON.parse(withoutFence);
+  } catch (firstError) {
+    const firstBrace = withoutFence.indexOf('{');
+    const lastBrace = withoutFence.lastIndexOf('}');
+
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      const maybeJson = withoutFence.slice(firstBrace, lastBrace + 1);
+      return JSON.parse(maybeJson);
+    }
+
+    throw firstError;
+  }
+}
+
+async function analyzeAlert(alertContext, evidence = null) {
   try {
     if (!process.env.GROQ_API_KEY) {
         throw new Error('GROQ_API_KEY environment variable is not set');
@@ -10,54 +260,79 @@ async function analyzeAlert(alertContext) {
         apiKey: process.env.GROQ_API_KEY
     });
 
-    const prompt = `
-You are an expert SRE (Site Reliability Engineer) analyzing a production alert.
+    const prompt = clampPrompt(`
+You are an expert SRE (Site Reliability Engineer) analyzing a production incident using multiple evidence sources.
+Your analysis must be highly pragmatic, action-oriented, and technically accurate.
 
-Alert Details:
-- Name: ${alertContext.name}
-- Severity: ${alertContext.severity}
-- Service: ${alertContext.service}
-- Instance: ${alertContext.instance}
-- Description: ${alertContext.description}
-- Summary: ${alertContext.summary}
+Incident Context:
+- Name: ${limitText(alertContext.name, 120)}
+- Severity: ${limitText(alertContext.severity, 40)}
+- Service: ${limitText(alertContext.service, 80)}
+- Instance: ${limitText(alertContext.instance, 80)}
+- Description: ${limitText(alertContext.description, 240)}
+- Summary: ${limitText(alertContext.summary, 240)}
 - Started At: ${alertContext.startsAt}
+- Ends At: ${alertContext.endsAt || 'unknown'}
 
-Based on this alert, please:
-1. Identify the most likely root cause (with confidence percentage)
-2. Suggest 3 remediation actions in order of priority
-3. For each action, explain why it might help
+Evidence Bundle:
+${buildEvidenceSection(evidence)}
 
-Format your response as JSON with this structure:
+CRITICAL RUNBOOK RULES (Strictly Enforce):
+1. Distinguish System vs. Business Errors: If the root cause is a user-initiated/business error (e.g., Insufficient funds, bad request payload, invalid credentials), DO NOT recommend infrastructure changes like restarting services, scaling pods, or failing over. Instead, recommend checking upstream clients, business logic configs, or external gateway/third-party statuses.
+2. Actionable & Specific Remediation: Every action must be concrete. Avoid generic placeholders like "check logs" or "monitor metrics" unless you specify EXACTLY which log pattern or metric query to look at based on the evidence.
+3. Logical Progression: Priority 1 action must immediately mitigate the ongoing incident or pinpoint the exact technical root cause. Priority 2 and 3 should follow up with deep-dive investigation or long-term remediation.
+
+Task:
+1. Identify the most likely root cause.
+2. Explain which evidence supports the conclusion.
+3. Assign a confidence score from 0 to 100 (Be conservative if evidence is sparse).
+4. Suggest 3 remediation actions in order of priority (Rank 1 to 3).
+5. List any missing or conflicting signals.
+6. Do not treat query/fetch errors as incident evidence unless they are clearly part of the service incident.
+7. If logs or traces are missing, say that evidence is missing instead of inventing a cause from the missing data.
+
+Return ONLY a single valid JSON object following this EXACT schema. Do not include any markdown wrapper or extra text outside the JSON:
 {
-  "rootCause": "description here",
+  "rootCause": "<Detailed technical explanation of the root cause and relationship between signals>",
   "confidence": 85,
+  "evidenceUsed": {
+    "metrics": ["<Specific metric line used as evidence>"],
+    "logs": ["<Specific log line used as evidence>"],
+    "traces": ["<Specific trace/span line used as evidence>"]
+  },
+  "traceIds": ["<extracted-trace-id>"],
+  "correlatedSignals": ["<key signal 1>", "<key signal 2>"],
   "actions": [
     {
       "priority": 1,
-      "action": "restart_service",
-      "description": "Restart the failing service",
-      "reason": "why this helps",
+      "action": "<short_snake_case_action_name>",
+      "description": "<Specific, actionable instruction for On-Call engineer>",
+      "reason": "<Why this action directly helps resolve or debug the root cause>",
       "service": "${alertContext.service}"
     },
     {
       "priority": 2,
-      "action": "check_logs",
-      "description": "Check recent error logs",
-      "reason": "why this helps",
+      "action": "<short_snake_case_action_name>",
+      "description": "<Next investigative step or secondary mitigation>",
+      "reason": "<Why this is the logical next step>",
       "service": "${alertContext.service}"
     },
     {
       "priority": 3,
-      "action": "view_metrics",
-      "description": "Check CPU and memory metrics",
-      "reason": "why this helps",
+      "action": "<short_snake_case_action_name>",
+      "description": "<Post-incident preventative or monitoring task>",
+      "reason": "<How this prevents recurrence>",
       "service": "${alertContext.service}"
     }
-  ]
+  ],
+  "missingSignals": ["<signal that was expected but missing>"]
 }
 
-Respond ONLY with valid JSON, no markdown or extra text.
-    `;
+Important Architecture Rules:
+- Do not put correlation or missingSignals inside evidenceUsed.
+- Keep evidenceUsed limited to metrics, logs, and traces.
+- Do not use phrases like "unavailable" or "missing" as correlated signals; those belong in missingSignals only.
+`);
 
     console.log('🔍 Sending prompt to Groq...');
     
@@ -75,13 +350,10 @@ Respond ONLY with valid JSON, no markdown or extra text.
     const responseText = message.choices[0].message.content;
     console.log('📝 Groq Response:', responseText);
     
-    const analysis = JSON.parse(responseText);
-    
-    return {
-      rootCause: analysis.rootCause,
-      confidence: analysis.confidence,
-      recommendedActions: analysis.actions
-    };
+    const analysis = parseGroqJsonResponse(responseText);
+    const normalizedAnalysis = normalizeAnalysisResponse(analysis, evidence);
+
+    return normalizedAnalysis;
   } catch (error) {
     console.error('❌ Error analyzing alert with Groq:');
     console.error('Error name:', error.name);
@@ -93,6 +365,9 @@ Respond ONLY with valid JSON, no markdown or extra text.
     return {
       rootCause: 'Unable to analyze (Groq service unavailable)',
       confidence: 0,
+      evidenceUsed: {},
+      traceIds: [],
+      correlatedSignals: [],
       recommendedActions: [
         {
           priority: 1,
@@ -109,6 +384,7 @@ Respond ONLY with valid JSON, no markdown or extra text.
           service: alertContext.service
         }
       ],
+      missingSignals: ['Groq analysis unavailable'],
       error: error.message
     };
   }
