@@ -42,7 +42,7 @@ The AI remediation agent currently supports:
 - confidence scoring for the diagnosis
 - Slack approval flow for recommended remediation
 
-Groq is used through the `groq-sdk` package with the `llama-3.1-8b-instant` model.
+Groq is used through the `groq-sdk` package. The default model is `qwen/qwen3-32b`, and it can be changed with `GROQ_MODEL`.
 If Groq is unavailable or the API key is missing, the agent falls back to a simple non-AI response so alert handling still continues.
 
 ## Architecture
@@ -182,7 +182,11 @@ Create a Groq account and add this to your `.env` file:
 
 ```bash
 GROQ_API_KEY=gsk_your_api_key_here
+GROQ_MODEL=qwen/qwen3-32b
+GROQ_MAX_TOKENS=1024
 ```
+
+`GROQ_MODEL` can be set to another free-tier model such as `llama-3.1-8b-instant` if you need to compare behavior. `GROQ_MAX_TOKENS` keeps responses predictable against Groq's per-minute token budget.
 
 ### 2. Slack App
 

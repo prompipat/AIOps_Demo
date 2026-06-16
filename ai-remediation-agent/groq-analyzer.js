@@ -1,5 +1,6 @@
 const { Groq } = require('groq-sdk');
 
+const GROQ_MODEL = process.env.GROQ_MODEL || 'qwen/qwen3-32b';
 const MAX_PROMPT_CHARS = Number(process.env.GROQ_PROMPT_MAX_CHARS || 12000);
 const MAX_TEXT_CHARS = Number(process.env.GROQ_TEXT_MAX_CHARS || 240);
 const MAX_METRIC_SNAPSHOT = Number(process.env.GROQ_MAX_METRIC_SNAPSHOT || 4);
@@ -7,6 +8,7 @@ const MAX_LOG_ENTRIES = Number(process.env.GROQ_MAX_LOG_ENTRIES || 3);
 const MAX_TRACE_SUMMARIES = Number(process.env.GROQ_MAX_TRACE_SUMMARIES || 3);
 const MAX_SPAN_DETAILS = Number(process.env.GROQ_MAX_SPAN_DETAILS || 4);
 const MAX_ARRAY_ITEMS = Number(process.env.GROQ_MAX_ARRAY_ITEMS || 6);
+const GROQ_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 1024);
 
 function limitText(value, maxChars = MAX_TEXT_CHARS) {
   if (typeof value !== 'string') {
@@ -230,10 +232,16 @@ function parseGroqJsonResponse(responseText) {
     throw new Error('Empty Groq response');
   }
 
-  const trimmed = responseText.trim();
-  const withoutFence = trimmed
+  const withoutReasoning = responseText
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<analysis>[\s\S]*?<\/analysis>/gi, '')
+    .replace(/<think>[\s\S]*?(?=\{)/gi, '')
+    .replace(/<analysis>[\s\S]*?(?=\{)/gi, '')
+    .trim();
+  const withoutFence = withoutReasoning
     .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '');
+    .replace(/\s*```$/i, '')
+    .trim();
 
   try {
     return JSON.parse(withoutFence);
@@ -247,6 +255,27 @@ function parseGroqJsonResponse(responseText) {
     }
 
     throw firstError;
+  }
+}
+
+async function createGroqCompletion(groq, request) {
+  try {
+    return await groq.chat.completions.create({
+      ...request,
+      response_format: { type: 'json_object' }
+    });
+  } catch (error) {
+    const message = String(error?.message || '');
+    const isResponseFormatUnsupported =
+      error?.status === 400 &&
+      /response_format|json_object|unsupported|not supported/i.test(message);
+
+    if (!isResponseFormatUnsupported) {
+      throw error;
+    }
+
+    console.warn('Groq JSON response_format is not supported for this model/API version. Retrying without response_format.');
+    return groq.chat.completions.create(request);
   }
 }
 
@@ -334,12 +363,22 @@ Important Architecture Rules:
 - Do not use phrases like "unavailable" or "missing" as correlated signals; those belong in missingSignals only.
 `);
 
-    console.log('🔍 Sending prompt to Groq...');
+    console.log(`🔍 Sending prompt to Groq model ${GROQ_MODEL}...`);
     
-    const message = await groq.chat.completions.create({
-      model: 'llama-3.1-8b-instant',
-      max_tokens: 1024,
+    const message = await createGroqCompletion(groq, {
+      model: GROQ_MODEL,
+      max_tokens: GROQ_MAX_TOKENS,
+      temperature: 0.1,
       messages: [
+        {
+          role: 'system',
+          content: [
+            'You are a production SRE incident analysis engine.',
+            'Return only one valid JSON object.',
+            'Do not include markdown, prose, chain-of-thought, reasoning tags, or text before or after the JSON.',
+            'If you need to reason, do it internally and only emit the final JSON.'
+          ].join(' ')
+        },
         {
           role: 'user',
           content: prompt
