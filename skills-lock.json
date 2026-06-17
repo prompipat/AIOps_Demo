@@ -7,6 +7,12 @@
       "skillPath": "skills/brainstorming/SKILL.md",
       "computedHash": "f483c304fcde060211ffae00f49bb728536e7e7613c99db45b5b924d9fc17243"
     },
+    "ponytail": {
+      "source": "dietrichgebert/ponytail",
+      "sourceType": "github",
+      "skillPath": "skills/ponytail/SKILL.md",
+      "computedHash": "0730708760f3b2394f1ec6fd9b09bc87d3bbebd9a5ad875d102b0cacaabca729"
+    },
     "review": {
       "source": "camacho/ai-skills",
       "sourceType": "github",

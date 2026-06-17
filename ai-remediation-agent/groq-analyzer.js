@@ -9,6 +9,7 @@ const MAX_TRACE_SUMMARIES = Number(process.env.GROQ_MAX_TRACE_SUMMARIES || 3);
 const MAX_SPAN_DETAILS = Number(process.env.GROQ_MAX_SPAN_DETAILS || 4);
 const MAX_ARRAY_ITEMS = Number(process.env.GROQ_MAX_ARRAY_ITEMS || 6);
 const GROQ_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 1024);
+const GROQ_STRICT_JSON = process.env.GROQ_STRICT_JSON === 'true';
 
 function limitText(value, maxChars = MAX_TEXT_CHARS) {
   if (typeof value !== 'string') {
@@ -259,6 +260,10 @@ function parseGroqJsonResponse(responseText) {
 }
 
 async function createGroqCompletion(groq, request) {
+  if (!GROQ_STRICT_JSON) {
+    return groq.chat.completions.create(request);
+  }
+
   try {
     return await groq.chat.completions.create({
       ...request,
@@ -266,15 +271,15 @@ async function createGroqCompletion(groq, request) {
     });
   } catch (error) {
     const message = String(error?.message || '');
-    const isResponseFormatUnsupported =
+    const shouldRetryWithoutStrictJson =
       error?.status === 400 &&
-      /response_format|json_object|unsupported|not supported/i.test(message);
+      /response_format|json_object|unsupported|not supported|json_validate_failed|failed to validate json/i.test(message);
 
-    if (!isResponseFormatUnsupported) {
+    if (!shouldRetryWithoutStrictJson) {
       throw error;
     }
 
-    console.warn('Groq JSON response_format is not supported for this model/API version. Retrying without response_format.');
+    console.warn('Groq strict JSON response failed. Retrying without response_format and parsing JSON locally.');
     return groq.chat.completions.create(request);
   }
 }
@@ -319,42 +324,49 @@ Task:
 5. List any missing or conflicting signals.
 6. Do not treat query/fetch errors as incident evidence unless they are clearly part of the service incident.
 7. If logs or traces are missing, say that evidence is missing instead of inventing a cause from the missing data.
+8. The action field MUST be one of these exact allowlisted values only:
+   - "check_logs" for reading recent service logs.
+   - "view_metrics" for reading Prometheus metrics.
+   - "restart_service" for restarting a Docker Compose service.
+9. Use "restart_service" only when evidence indicates the service is unhealthy, wedged, down, or likely recoverable by restart. Do not use "restart_service" for business declines such as insufficient funds.
+10. If the best next step is investigation, use either "check_logs" or "view_metrics"; do not invent action names like "investigate_payment_failures".
 
-Return ONLY a single valid JSON object following this EXACT schema. Do not include any markdown wrapper or extra text outside the JSON:
+Return ONLY a single valid JSON object matching this shape. Do not include markdown, comments, angle-bracket placeholders, trailing commas, or text outside the JSON.
+Use concrete strings, not placeholder text.
 {
-  "rootCause": "<Detailed technical explanation of the root cause and relationship between signals>",
+  "rootCause": "payment-service is not accepting charge requests, causing order creation to fail downstream.",
   "confidence": 85,
   "evidenceUsed": {
-    "metrics": ["<Specific metric line used as evidence>"],
-    "logs": ["<Specific log line used as evidence>"],
-    "traces": ["<Specific trace/span line used as evidence>"]
+    "metrics": ["charges_per_min is 0 for payment-service during the incident window"],
+    "logs": ["order-service reports payment request failed while calling payment-service"],
+    "traces": ["trace spans show errors around payment-service charge calls"]
   },
-  "traceIds": ["<extracted-trace-id>"],
-  "correlatedSignals": ["<key signal 1>", "<key signal 2>"],
+  "traceIds": [],
+  "correlatedSignals": ["PaymentServiceDown alert is firing", "orders fail when payment-service is unavailable"],
   "actions": [
     {
       "priority": 1,
-      "action": "<short_snake_case_action_name>",
-      "description": "<Specific, actionable instruction for On-Call engineer>",
-      "reason": "<Why this action directly helps resolve or debug the root cause>",
+      "action": "restart_service",
+      "description": "Restart payment-service using the Docker Compose remediation tool.",
+      "reason": "The alert indicates payment-service is down or not processing charge traffic.",
       "service": "${alertContext.service}"
     },
     {
       "priority": 2,
-      "action": "<short_snake_case_action_name>",
-      "description": "<Next investigative step or secondary mitigation>",
-      "reason": "<Why this is the logical next step>",
+      "action": "check_logs",
+      "description": "Check recent payment-service logs for startup, connection, or runtime errors.",
+      "reason": "Logs can confirm whether the restart resolved the failure or whether the service crashes again.",
       "service": "${alertContext.service}"
     },
     {
       "priority": 3,
-      "action": "<short_snake_case_action_name>",
-      "description": "<Post-incident preventative or monitoring task>",
-      "reason": "<How this prevents recurrence>",
+      "action": "view_metrics",
+      "description": "Review payment-service charge rate and failed charge rate after remediation.",
+      "reason": "Metrics confirm whether charge traffic recovered after the restart.",
       "service": "${alertContext.service}"
     }
   ],
-  "missingSignals": ["<signal that was expected but missing>"]
+  "missingSignals": []
 }
 
 Important Architecture Rules:
@@ -400,6 +412,21 @@ Important Architecture Rules:
     console.error('Error status:', error.status);
     console.error('Full error:', JSON.stringify(error, null, 2));
     
+    const isServiceDown = /down|unavailable|no traffic/i.test(`${alertContext.name} ${alertContext.summary} ${alertContext.description}`);
+    const fallbackPrimaryAction = isServiceDown ? {
+      priority: 1,
+      action: 'restart_service',
+      description: `Restart ${alertContext.service} because the service-down alert is firing.`,
+      reason: 'The alert indicates the service is down or not processing traffic, and restart is the lab-approved high-risk remediation.',
+      service: alertContext.service
+    } : {
+      priority: 1,
+      action: 'check_logs',
+      description: `Check recent logs for ${alertContext.service}.`,
+      reason: 'Groq analysis failed, so use read-only evidence collection before taking mutating action.',
+      service: alertContext.service
+    };
+
     // Fallback response if Groq fails
     return {
       rootCause: 'Unable to analyze (Groq service unavailable)',
@@ -408,13 +435,7 @@ Important Architecture Rules:
       traceIds: [],
       correlatedSignals: [],
       recommendedActions: [
-        {
-          priority: 1,
-          action: 'restart_service',
-          description: 'Restart the failing service',
-          reason: 'Often resolves transient issues',
-          service: alertContext.service
-        },
+        fallbackPrimaryAction,
         {
           priority: 2,
           action: 'check_logs',

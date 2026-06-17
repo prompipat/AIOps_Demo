@@ -16,7 +16,7 @@ const revenueCounter = meter.createCounter('revenue.total', {
 });
 const chargeLatency = meter.createHistogram('charge.duration', { unit: 'ms' });
 
-const FAILURE_RATE = 0.85;
+const FAILURE_RATE = 0.15;
 
 function buildLog(service, level, msg, extra = {}, span = null) {
   const spanContext = span?.spanContext?.() || null;
@@ -52,7 +52,9 @@ app.post('/charge', async (req, res) => {
 
   await new Promise((resolve) => setTimeout(resolve, 100 + Math.random() * 200));
 
-  if (Math.random() < FAILURE_RATE) {
+  const forcedFailure = req.headers['x-force-payment-failure'] === 'true';
+
+  if (forcedFailure || Math.random() < FAILURE_RATE) {
     chargeCounter.add(1, { status: 'failed', reason: 'insufficient_funds' });
     span.recordException(new Error('Payment declined: insufficient funds'));
     span.setStatus({ code: 2, message: 'payment_failed' });
@@ -66,6 +68,7 @@ app.post('/charge', async (req, res) => {
       currency: 'THB',
       status: 'failed',
       reason: 'insufficient_funds',
+      forcedFailure,
       duration_ms: Date.now() - start
     }, span));
     return res.status(402).json({ success: false, reason: 'insufficient_funds' });

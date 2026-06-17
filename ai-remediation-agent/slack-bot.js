@@ -31,9 +31,9 @@ function formatEvidenceLines(items, fallback = 'none') {
     .join('\n');
 }
 
-async function sendSlackApproval(alertContext, analysis, bolt) {
+async function sendSlackApproval(alertContext, analysis, bolt, actionRequests = []) {
   try {
-    const primaryAction = analysis.recommendedActions[0];
+    const pendingApproval = actionRequests.find((request) => request.status === 'pending_approval');
     const evidenceUsed = analysis.evidenceUsed || {};
     const correlatedSignals = analysis.correlatedSignals || [];
     const missingSignals = analysis.missingSignals || [];
@@ -122,39 +122,57 @@ async function sendSlackApproval(alertContext, analysis, bolt) {
       });
     });
 
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: {
-            type: 'plain_text',
-            text: 'Approve & Execute',
-            emoji: true
-          },
-          value: JSON.stringify({
-            action: primaryAction.action,
-            service: primaryAction.service,
-            alertname: alertContext.name
-          }),
-          action_id: 'approve_remediation',
-          style: 'primary'
-        },
-        {
-          type: 'button',
-          text: {
-            type: 'plain_text',
-            text: 'Reject',
-            emoji: true
-          },
-          value: JSON.stringify({
-            alertname: alertContext.name
-          }),
-          action_id: 'reject_remediation',
-          style: 'danger'
+    if (pendingApproval) {
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Pending Approval*\nAction: \`${pendingApproval.action}\`\nService: \`${pendingApproval.service}\`\nRisk: *${pendingApproval.risk}*`
         }
-      ]
-    });
+      });
+
+      blocks.push({
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: 'Approve & Execute',
+              emoji: true
+            },
+            value: JSON.stringify({
+              actionId: pendingApproval.id,
+              alertname: alertContext.name
+            }),
+            action_id: 'approve_remediation',
+            style: 'primary'
+          },
+          {
+            type: 'button',
+            text: {
+              type: 'plain_text',
+              text: 'Reject',
+              emoji: true
+            },
+            value: JSON.stringify({
+              actionId: pendingApproval.id,
+              alertname: alertContext.name
+            }),
+            action_id: 'reject_remediation',
+            style: 'danger'
+          }
+        ]
+      });
+    } else {
+      blocks.push({
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: '*Approval:* No high-risk action is pending. Low-risk actions were auto-executed or unsupported actions were blocked.'
+        }
+      });
+    }
 
     await bolt.client.chat.postMessage({
       channel: SLACK_CHANNEL_ID,

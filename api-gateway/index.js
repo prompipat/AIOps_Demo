@@ -50,11 +50,16 @@ app.post('/order', async (req, res) => {
   }, span));
 
   try {
+    const headers = {};
+    if (req.headers['x-force-payment-failure'] === 'true') {
+      headers['x-force-payment-failure'] = 'true';
+    }
+
     const orderRes = await axios.post('http://order-service:3001/create', {
       item,
       quantity,
       userId,
-    });
+    }, { headers });
 
     console.log(buildLog('api-gateway', 'info', 'order request completed', {
       route: '/order',

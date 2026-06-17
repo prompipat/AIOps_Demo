@@ -5,6 +5,12 @@ require('dotenv').config();
 
 const { initSlackBot, sendSlackApproval } = require('./slack-bot');
 const { analyzeAlert } = require('./groq-analyzer');
+const {
+    handleRecommendedAction,
+    approveAction,
+    rejectAction
+} = require('./action-orchestrator')
+const { listActions } = require('./approval-store')
 
 const app = express();
 const PORT = process.env.PORT || 3003;
@@ -594,8 +600,15 @@ app.post('/alerts', async (req, res) => {
             const analysis = await analyzeAlert(alertContext, evidence);
             console.log('Analysis Result:', analysis);
 
+            const actionRequests = [];
+            for (const action of analysis.recommendedActions || []) {
+                const actionRequest = await handleRecommendedAction(action, alertContext);
+                actionRequests.push(actionRequest);
+                console.log('Action request:', actionRequest);
+            }
+
             console.log('Sending approval request to Slack...');
-            await sendSlackApproval(alertContext, analysis, bolt);
+            await sendSlackApproval(alertContext, analysis, bolt, actionRequests);
         }
 
         res.json({ status: 'received', count: alerts.length });
@@ -606,59 +619,39 @@ app.post('/alerts', async (req, res) => {
 });
 
 bolt.action('approve_remediation', async ({ body, ack, say }) => {
-    await ack();
+  await ack();
 
-    const metadata = JSON.parse(body.action[0].value);
-    console.log(`User ${body.user.name} approved action: ${metadata.action}`);
+  const metadata = JSON.parse(body.actions[0].value);
 
-    try {
-        const result = await executeAction(metadata);
+  try {
+    const result = await approveAction(metadata.actionId, body.user.name);
 
-        await say({
-            text: `Remediation executed successfully.\n${result}`,
-            blocks: [
-                {
-                    type: 'section',
-                    text: {
-                        type: 'mrkdwn',
-                        text: `*Remediation Executed*\n\`\`\`${result}\`\`\``
-                    }
-                }
-            ]
-        });
-    } catch (error) {
-        await say({
-            text: `Remediation failed: ${error.message}`,
-            blocks: [
-                {
-                    type: 'section',
-                    text: {
-                        type: 'mrkdwn',
-                        text: `*Remediation Failed*\n\`\`\`${error.message}\`\`\``
-                    }
-                }
-            ]
-        });
-    }
+    await say({
+      text: `Remediation ${result.status}: ${result.action} for ${result.service}`
+    });
+  } catch (error) {
+    await say({
+      text: `Approval failed: ${error.message}`
+    });
+  }
 });
 
 bolt.action('reject_remediation', async ({ body, ack, say }) => {
-    await ack();
+  await ack();
 
-    console.log(`User ${body.user.name} rejected remediation`);
+  const metadata = JSON.parse(body.actions[0].value);
+
+  try {
+    const result = rejectAction(metadata.actionId, body.user.name);
 
     await say({
-        text: 'Remediation rejected by user. Manual intervention required.',
-        blocks: [
-            {
-                type: 'section',
-                text: {
-                    type: 'mrkdwn',
-                    text: `*Remediation Rejected*\nNo automatic action taken. Please investigate manually.`
-                }
-            }
-        ]
+      text: `Remediation rejected: ${result.action} for ${result.service}`
     });
+  } catch (error) {
+    await say({
+      text: `Reject failed: ${error.message}`
+    });
+  }
 });
 
 async function executeAction(metadata) {
@@ -723,18 +716,200 @@ async function executeAction(metadata) {
     }
 }
 
+app.get('/approvals', (req, res) => {
+    res.json({
+        actions: listActions()
+    });
+});
+
+app.post('/approvals/:id/approve', async (req, res) => {
+    try {
+        const result = await approveAction(req.params.id, 'dashboard');
+        res.json(result);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/approvals/:id/reject', async (req, res) => {
+    try {
+        const result = rejectAction(req.params.id, 'dashboard');
+        res.json(result);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.post('/test/pending-restart/:service', async (req, res) => {
+    const service = req.params.service;
+    const alertContext = {
+        name: 'ManualRestartApprovalTest',
+        severity: 'test',
+        service,
+        instance: 'local-docker-compose',
+        description: `Manual HITL approval test for ${service}`,
+        summary: `Create a pending restart approval for ${service}`,
+        startsAt: new Date().toISOString(),
+        endsAt: null
+    };
+
+    const analysis = {
+        rootCause: 'Manual test action created to validate the HITL approval workflow.',
+        confidence: 100,
+        evidenceUsed: {
+            metrics: ['Manual test; no Prometheus evidence required.'],
+            logs: ['Manual test; no Loki evidence required.'],
+            traces: ['Manual test; no Jaeger evidence required.']
+        },
+        traceIds: [],
+        correlatedSignals: ['Manual approval workflow test'],
+        missingSignals: [],
+        recommendedActions: [
+            {
+                priority: 1,
+                action: 'restart_service',
+                description: `Restart ${service} to test approval and execution.`,
+                reason: 'This action is intentionally high-risk so it should require human approval.',
+                service
+            }
+        ]
+    };
+
+    try {
+        const actionRequest = await handleRecommendedAction(analysis.recommendedActions[0], alertContext);
+        await sendSlackApproval(alertContext, analysis, bolt, [actionRequest]);
+
+        res.json({
+            status: 'created',
+            action: actionRequest,
+            dashboard: '/dashboard'
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+app.get('/dashboard', (req, res) => {
+  res.type('html').send(`
+<!doctype html>
+<html>
+<head>
+  <title>AIOps Remediation Approvals</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 32px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #ddd; padding: 10px; text-align: left; }
+    button { margin-right: 8px; padding: 6px 10px; }
+    .high { color: #b00020; font-weight: bold; }
+    .low { color: #166534; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>AIOps Remediation Approvals</h1>
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Risk</th>
+        <th>Action</th>
+        <th>Service</th>
+        <th>Reason</th>
+        <th>Decision</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <script>
+    async function post(url) {
+      await fetch(url, { method: 'POST' });
+      await load();
+    }
+
+    async function load() {
+      const res = await fetch('/approvals');
+      const data = await res.json();
+
+      document.getElementById('rows').innerHTML = data.actions.map(action => {
+        const canDecide = action.status === 'pending_approval';
+
+        return \`
+          <tr>
+            <td>\${action.status}</td>
+            <td class="\${action.risk}">\${action.risk}</td>
+            <td>\${action.action}</td>
+            <td>\${action.service || ''}</td>
+            <td>\${action.reason || action.description || ''}</td>
+            <td>
+              \${canDecide ? \`
+                <button onclick="post('/approvals/\${action.id}/approve')">Approve</button>
+                <button onclick="post('/approvals/\${action.id}/reject')">Reject</button>
+              \` : ''}
+            </td>
+          </tr>
+        \`;
+      }).join('');
+    }
+
+    load();
+    setInterval(load, 3000);
+  </script>
+</body>
+</html>
+  `);
+});
+
 app.listen(PORT, () => {
     console.log(`AI Remediation Agent listening on port ${PORT}`);
     console.log(`Alert webhook: http://localhost:${PORT}/alerts`);
 });
 
-app.post('/slack/events', async (req, res) => {
-    await bolt.processEvent(req);
-    res.status(200).end();
-});
+app.post('/slack/events', bodyParser.urlencoded({ extended: false }), async (req, res) => {
+    let payload;
 
-bolt.start(process.env.SLACK_PORT || 3000).then(() => {
-    console.log('Slack bot started');
+    try {
+        payload = JSON.parse(req.body.payload || '{}');
+    } catch (error) {
+        res.status(400).send('Invalid Slack payload');
+        return;
+    }
+
+    res.status(200).send('');
+
+    const action = payload.actions?.[0];
+    const channel = payload.channel?.id || process.env.SLACK_CHANNEL_ID;
+    const actor = payload.user?.username || payload.user?.name || payload.user?.id || 'slack';
+
+    if (!action) {
+        return;
+    }
+
+    try {
+        const metadata = JSON.parse(action.value || '{}');
+        let result;
+
+        if (action.action_id === 'approve_remediation') {
+            result = await approveAction(metadata.actionId, actor);
+            await bolt.client.chat.postMessage({
+                channel,
+                text: `Remediation ${result.status}: ${result.action} for ${result.service}`
+            });
+            return;
+        }
+
+        if (action.action_id === 'reject_remediation') {
+            result = rejectAction(metadata.actionId, actor);
+            await bolt.client.chat.postMessage({
+                channel,
+                text: `Remediation rejected: ${result.action} for ${result.service}`
+            });
+        }
+    } catch (error) {
+        await bolt.client.chat.postMessage({
+            channel,
+            text: `Slack approval failed: ${error.message}`
+        });
+    }
 });
 
 module.exports = app;

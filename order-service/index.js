@@ -42,11 +42,16 @@ app.post('/create', async (req, res) => {
 
     const orderId = `ORD-${Date.now()}`;
 
+    const headers = {};
+    if (req.headers['x-force-payment-failure'] === 'true') {
+      headers['x-force-payment-failure'] = 'true';
+    }
+
     const payRes = await axios.post('http://payment-service:3002/charge', {
       orderId,
       amount: quantity * 100,
       userId,
-    });
+    }, { headers });
 
     paymentCounter.add(1, { status: 'success' });
     span.setStatus({ code: 1 });
