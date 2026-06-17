@@ -8,7 +8,7 @@ const MAX_LOG_ENTRIES = Number(process.env.GROQ_MAX_LOG_ENTRIES || 3);
 const MAX_TRACE_SUMMARIES = Number(process.env.GROQ_MAX_TRACE_SUMMARIES || 3);
 const MAX_SPAN_DETAILS = Number(process.env.GROQ_MAX_SPAN_DETAILS || 4);
 const MAX_ARRAY_ITEMS = Number(process.env.GROQ_MAX_ARRAY_ITEMS || 6);
-const GROQ_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 1024);
+const GROQ_MAX_TOKENS = Number(process.env.GROQ_MAX_TOKENS || 1536);
 const GROQ_STRICT_JSON = process.env.GROQ_STRICT_JSON === 'true';
 
 function limitText(value, maxChars = MAX_TEXT_CHARS) {
@@ -295,6 +295,8 @@ async function analyzeAlert(alertContext, evidence = null) {
     });
 
     const prompt = clampPrompt(`
+/no_think
+
 You are an expert SRE (Site Reliability Engineer) analyzing a production incident using multiple evidence sources.
 Your analysis must be highly pragmatic, action-oriented, and technically accurate.
 
@@ -320,7 +322,7 @@ Task:
 1. Identify the most likely root cause.
 2. Explain which evidence supports the conclusion.
 3. Assign a confidence score from 0 to 100 (Be conservative if evidence is sparse).
-4. Suggest 3 remediation actions in order of priority (Rank 1 to 3).
+4. Suggest exactly 2 remediation actions in order of priority.
 5. List any missing or conflicting signals.
 6. Do not treat query/fetch errors as incident evidence unless they are clearly part of the service incident.
 7. If logs or traces are missing, say that evidence is missing instead of inventing a cause from the missing data.
@@ -357,13 +359,6 @@ Use concrete strings, not placeholder text.
       "description": "Check recent payment-service logs for startup, connection, or runtime errors.",
       "reason": "Logs can confirm whether the restart resolved the failure or whether the service crashes again.",
       "service": "${alertContext.service}"
-    },
-    {
-      "priority": 3,
-      "action": "view_metrics",
-      "description": "Review payment-service charge rate and failed charge rate after remediation.",
-      "reason": "Metrics confirm whether charge traffic recovered after the restart.",
-      "service": "${alertContext.service}"
     }
   ],
   "missingSignals": []
@@ -386,6 +381,7 @@ Important Architecture Rules:
           role: 'system',
           content: [
             'You are a production SRE incident analysis engine.',
+            'Do not output hidden reasoning or thinking tags.',
             'Return only one valid JSON object.',
             'Do not include markdown, prose, chain-of-thought, reasoning tags, or text before or after the JSON.',
             'If you need to reason, do it internally and only emit the final JSON.'
@@ -412,6 +408,7 @@ Important Architecture Rules:
     console.error('Error status:', error.status);
     console.error('Full error:', JSON.stringify(error, null, 2));
     
+    const isParseError = error instanceof SyntaxError;
     const isServiceDown = /down|unavailable|no traffic/i.test(`${alertContext.name} ${alertContext.summary} ${alertContext.description}`);
     const fallbackPrimaryAction = isServiceDown ? {
       priority: 1,
@@ -423,13 +420,15 @@ Important Architecture Rules:
       priority: 1,
       action: 'check_logs',
       description: `Check recent logs for ${alertContext.service}.`,
-      reason: 'Groq analysis failed, so use read-only evidence collection before taking mutating action.',
+      reason: 'AI analysis failed, so use read-only evidence collection before taking mutating action.',
       service: alertContext.service
     };
 
-    // Fallback response if Groq fails
+    // Fallback response if Groq fails or returns malformed JSON.
     return {
-      rootCause: 'Unable to analyze (Groq service unavailable)',
+      rootCause: isParseError
+        ? 'AI response was incomplete or malformed JSON'
+        : 'Unable to analyze (Groq service unavailable)',
       confidence: 0,
       evidenceUsed: {},
       traceIds: [],
@@ -444,7 +443,7 @@ Important Architecture Rules:
           service: alertContext.service
         }
       ],
-      missingSignals: ['Groq analysis unavailable'],
+      missingSignals: [isParseError ? 'Groq response parsing failed' : 'Groq analysis unavailable'],
       error: error.message
     };
   }

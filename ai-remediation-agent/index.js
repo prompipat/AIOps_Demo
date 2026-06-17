@@ -3,6 +3,7 @@ const axios = require('axios');
 const bodyParser = require('body-parser');
 require('dotenv').config();
 
+const { selectAlertsForAnalysis } = require('./alert-deduplicator');
 const { initSlackBot, sendSlackApproval } = require('./slack-bot');
 const { analyzeAlert } = require('./groq-analyzer');
 const {
@@ -559,6 +560,32 @@ function formatMetricSeries(series) {
         .join('\n');
 }
 
+function ensureRequiredRemediationActions(alertContext, analysis) {
+    const recommendedActions = Array.isArray(analysis.recommendedActions)
+        ? [...analysis.recommendedActions]
+        : [];
+
+    const hasRestart = recommendedActions.some((action) => action.action === 'restart_service');
+
+    if (alertContext.name === 'PaymentServiceDown' && !hasRestart) {
+        recommendedActions.unshift({
+            priority: 1,
+            action: 'restart_service',
+            description: `Restart ${alertContext.service} because the service-down alert is firing.`,
+            reason: 'PaymentServiceDown is a lab-approved root alert that requires human approval before restarting the stopped service.',
+            service: alertContext.service
+        });
+    }
+
+    return {
+        ...analysis,
+        recommendedActions: recommendedActions.map((action, index) => ({
+            ...action,
+            priority: index + 1
+        }))
+    };
+}
+
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', service: 'ai-remediation-agent' });
 });
@@ -568,12 +595,14 @@ app.post('/alerts', async (req, res) => {
         const alerts = req.body.alerts || [];
         console.log(`Received ${alerts.length} alert(s)`);
 
-        for (const alert of alerts) {
-            if (alert.status !== 'firing') {
-                continue;
-            }
+        const { selected, suppressed } = selectAlertsForAnalysis(alerts);
 
-            console.log(`Processing alert: ${alert.labels.alertname}`);
+        for (const item of suppressed) {
+            console.log(`Skipping alert: ${item.reason}`);
+        }
+
+        for (const alert of selected) {
+            console.log(`Processing selected root alert: ${alert.labels.alertname}`);
 
             const alertContext = {
                 name: alert.labels.alertname,
@@ -597,7 +626,7 @@ app.post('/alerts', async (req, res) => {
             });
 
             console.log('Analyzing with Groq...');
-            const analysis = await analyzeAlert(alertContext, evidence);
+            const analysis = ensureRequiredRemediationActions(alertContext, await analyzeAlert(alertContext, evidence));
             console.log('Analysis Result:', analysis);
 
             const actionRequests = [];

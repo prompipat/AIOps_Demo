@@ -10,23 +10,40 @@ function assertAllowedService(service) {
     }
 }
 
-async function getContainerIdForService(service) {
+async function getContainerForService(service, options = {}) {
     assertAllowedService(service);
 
-    const { stdout } = await execFileAsync('docker', [
+    const args = [
         'ps',
         '-q',
         '--filter',
         `label=com.docker.compose.service=${service}`
-    ]);
+    ];
+
+    if (options.includeStopped) {
+        args.splice(1, 0, '-a');
+    }
+
+    const { stdout } = await execFileAsync('docker', args);
 
     const containerId = stdout.trim().split(/\r?\n/).filter(Boolean)[0];
 
     if (!containerId) {
-        throw new Error(`No running container found for service: ${service}`);
+        throw new Error(`No ${options.includeStopped ? 'container' : 'running container'} found for service: ${service}`);
     }
 
     return containerId;
+}
+
+async function isContainerRunning(containerId) {
+    const { stdout } = await execFileAsync('docker', [
+        'inspect',
+        '-f',
+        '{{.State.Running}}',
+        containerId
+    ]);
+
+    return stdout.trim() === 'true';
 }
 
 async function callDockerTool(toolName, args = {}) {
@@ -46,7 +63,7 @@ async function callDockerTool(toolName, args = {}) {
 }
 
 async function getLogs(service, tail) {
-    const containerId = await getContainerIdForService(service);
+    const containerId = await getContainerForService(service, { includeStopped: true });
 
     const { stdout } = await execFileAsync('docker', [
         'logs',
@@ -58,14 +75,16 @@ async function getLogs(service, tail) {
 }
 
 async function restartService(service) {
-    const containerId = await getContainerIdForService(service);
+    const containerId = await getContainerForService(service, { includeStopped: true });
+    const isRunning = await isContainerRunning(containerId);
 
+    const command = isRunning ? 'restart' : 'start';
     const { stdout } = await execFileAsync('docker', [
-        'restart',
+        command,
         containerId
     ]);
 
-    return `Service ${service} restarted.\n${stdout}`;
+    return `Service ${service} ${isRunning ? 'restarted' : 'started'}.\n${stdout}`;
 }
 
 async function composePs() {
