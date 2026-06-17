@@ -3,7 +3,11 @@ const axios = require('axios');
 const bodyParser = require('body-parser');
 require('dotenv').config();
 
-const { selectAlertsForAnalysis } = require('./alert-deduplicator');
+const {
+    enqueueAlerts,
+    startIncidentWorker,
+    listIncidents
+} = require('./incident-queue');
 const { initSlackBot, sendSlackApproval } = require('./slack-bot');
 const { analyzeAlert } = require('./groq-analyzer');
 const {
@@ -586,6 +590,50 @@ function ensureRequiredRemediationActions(alertContext, analysis) {
     };
 }
 
+function buildAlertContext(alert) {
+    return {
+        name: alert.labels.alertname,
+        severity: alert.labels.severity || 'unknown',
+        service: resolveServiceFromAlert(alert),
+        instance: alert.labels.instance || 'unknown',
+        description: alert.annotations.description || '',
+        summary: alert.annotations.summary || '',
+        startsAt: alert.startsAt,
+        endsAt: alert.endsAt
+    };
+}
+
+async function processIncident(incident) {
+    const alert = incident.alert;
+    console.log(`Processing queued incident: ${incident.alertname} for ${incident.service} (${incident.id})`);
+
+    const alertContext = buildAlertContext(alert);
+
+    console.log('Alert Context:', alertContext);
+    console.log('Collecting evidence from Prometheus, Loki, and Jaeger...');
+    const evidence = await collectEvidence(alert, alertContext);
+    console.log('Evidence Bundle:', {
+        service: evidence.alert.service,
+        metricGroups: evidence.metrics.snapshot.length,
+        logErrors: evidence.logs.errorCount,
+        traces: evidence.traces.totalTraces
+    });
+
+    console.log('Analyzing with Groq...');
+    const analysis = ensureRequiredRemediationActions(alertContext, await analyzeAlert(alertContext, evidence));
+    console.log('Analysis Result:', analysis);
+
+    const actionRequests = [];
+    for (const action of analysis.recommendedActions || []) {
+        const actionRequest = await handleRecommendedAction(action, alertContext);
+        actionRequests.push(actionRequest);
+        console.log('Action request:', actionRequest);
+    }
+
+    console.log('Sending approval request to Slack...');
+    await sendSlackApproval(alertContext, analysis, bolt, actionRequests);
+}
+
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', service: 'ai-remediation-agent' });
 });
@@ -595,52 +643,22 @@ app.post('/alerts', async (req, res) => {
         const alerts = req.body.alerts || [];
         console.log(`Received ${alerts.length} alert(s)`);
 
-        const { selected, suppressed } = selectAlertsForAnalysis(alerts);
+        const result = enqueueAlerts(alerts);
 
-        for (const item of suppressed) {
-            console.log(`Skipping alert: ${item.reason}`);
+        for (const incident of result.enqueued) {
+            console.log(`Queued incident: ${incident.alertname} for ${incident.service} (${incident.id}) priority=${incident.priority}`);
         }
 
-        for (const alert of selected) {
-            console.log(`Processing selected root alert: ${alert.labels.alertname}`);
-
-            const alertContext = {
-                name: alert.labels.alertname,
-                severity: alert.labels.severity || 'unknown',
-                service: resolveServiceFromAlert(alert),
-                instance: alert.labels.instance || 'unknown',
-                description: alert.annotations.description || '',
-                summary: alert.annotations.summary || '',
-                startsAt: alert.startsAt,
-                endsAt: alert.endsAt
-            };
-
-            console.log('Alert Context:', alertContext);
-            console.log('Collecting evidence from Prometheus, Loki, and Jaeger...');
-            const evidence = await collectEvidence(alert, alertContext);
-            console.log('Evidence Bundle:', {
-                service: evidence.alert.service,
-                metricGroups: evidence.metrics.snapshot.length,
-                logErrors: evidence.logs.errorCount,
-                traces: evidence.traces.totalTraces
-            });
-
-            console.log('Analyzing with Groq...');
-            const analysis = ensureRequiredRemediationActions(alertContext, await analyzeAlert(alertContext, evidence));
-            console.log('Analysis Result:', analysis);
-
-            const actionRequests = [];
-            for (const action of analysis.recommendedActions || []) {
-                const actionRequest = await handleRecommendedAction(action, alertContext);
-                actionRequests.push(actionRequest);
-                console.log('Action request:', actionRequest);
-            }
-
-            console.log('Sending approval request to Slack...');
-            await sendSlackApproval(alertContext, analysis, bolt, actionRequests);
+        for (const item of result.skipped) {
+            console.log(`Incident not queued: ${item.reason}`);
         }
 
-        res.json({ status: 'received', count: alerts.length });
+        res.json({
+            status: 'queued',
+            received: alerts.length,
+            enqueued: result.enqueued.length,
+            skipped: result.skipped.length
+        });
     } catch (error) {
         console.error('Error processing alerts:', error);
         res.status(500).json({ error: error.message });
@@ -748,6 +766,12 @@ async function executeAction(metadata) {
 app.get('/approvals', (req, res) => {
     res.json({
         actions: listActions()
+    });
+});
+
+app.get('/incidents', (req, res) => {
+    res.json({
+        incidents: listIncidents()
     });
 });
 
@@ -892,6 +916,8 @@ app.listen(PORT, () => {
     console.log(`AI Remediation Agent listening on port ${PORT}`);
     console.log(`Alert webhook: http://localhost:${PORT}/alerts`);
 });
+
+startIncidentWorker(processIncident);
 
 app.post('/slack/events', bodyParser.urlencoded({ extended: false }), async (req, res) => {
     let payload;
