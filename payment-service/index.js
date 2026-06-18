@@ -17,6 +17,10 @@ const revenueCounter = meter.createCounter('revenue.total', {
 const chargeLatency = meter.createHistogram('charge.duration', { unit: 'ms' });
 
 const FAILURE_RATE = 0.15;
+const faultState = {
+  forceFailures: false,
+  extraLatencyMs: 0
+};
 
 function buildLog(service, level, msg, extra = {}, span = null) {
   const spanContext = span?.spanContext?.() || null;
@@ -50,11 +54,11 @@ app.post('/charge', async (req, res) => {
     currency: 'THB'
   }, span));
 
-  await new Promise((resolve) => setTimeout(resolve, 100 + Math.random() * 200));
+  await new Promise((resolve) => setTimeout(resolve, 100 + Math.random() * 200 + faultState.extraLatencyMs));
 
   const forcedFailure = req.headers['x-force-payment-failure'] === 'true';
 
-  if (forcedFailure || Math.random() < FAILURE_RATE) {
+  if (forcedFailure || faultState.forceFailures || Math.random() < FAILURE_RATE) {
     chargeCounter.add(1, { status: 'failed', reason: 'insufficient_funds' });
     span.recordException(new Error('Payment declined: insufficient funds'));
     span.setStatus({ code: 2, message: 'payment_failed' });
@@ -67,11 +71,14 @@ app.post('/charge', async (req, res) => {
       amount,
       currency: 'THB',
       status: 'failed',
-      reason: 'insufficient_funds',
-      forcedFailure,
+      reason: faultState.forceFailures ? 'demo_forced_failure' : 'insufficient_funds',
+      forcedFailure: forcedFailure || faultState.forceFailures,
       duration_ms: Date.now() - start
     }, span));
-    return res.status(402).json({ success: false, reason: 'insufficient_funds' });
+    return res.status(402).json({
+      success: false,
+      reason: faultState.forceFailures ? 'demo_forced_failure' : 'insufficient_funds'
+    });
   }
 
   const transactionId = `TXN-${Date.now()}`;
@@ -96,4 +103,27 @@ app.post('/charge', async (req, res) => {
 });
 
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'payment-service' }));
+app.get('/test/faults', (_, res) => res.json({
+  service: 'payment-service',
+  faults: faultState
+}));
+app.post('/test/fail-payments/on', (_, res) => {
+  faultState.forceFailures = true;
+  res.json({ status: 'enabled', fault: 'forceFailures', faults: faultState });
+});
+app.post('/test/fail-payments/off', (_, res) => {
+  faultState.forceFailures = false;
+  res.json({ status: 'disabled', fault: 'forceFailures', faults: faultState });
+});
+app.post('/test/latency/on', (req, res) => {
+  const requestedLatency = Number(req.body?.latencyMs ?? 1000);
+  faultState.extraLatencyMs = Number.isFinite(requestedLatency)
+    ? Math.max(0, Math.min(10000, Math.round(requestedLatency)))
+    : 1000;
+  res.json({ status: 'enabled', fault: 'extraLatencyMs', faults: faultState });
+});
+app.post('/test/latency/off', (_, res) => {
+  faultState.extraLatencyMs = 0;
+  res.json({ status: 'disabled', fault: 'extraLatencyMs', faults: faultState });
+});
 app.listen(3002, () => console.log('payment-service :3002'));

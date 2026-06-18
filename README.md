@@ -8,7 +8,7 @@ It combines:
 - metrics and alerting
 - centralized logs
 - Grafana dashboards
-- AI analysis with Groq free tier
+- AI analysis with Groq free tier or fake offline mode
 - Slack notifications with recommended next actions
 
 The core request path is:
@@ -43,6 +43,7 @@ The AI remediation agent currently supports:
 - Slack approval flow for recommended remediation
 
 Groq is used through the `groq-sdk` package. The default model is `qwen/qwen3-32b`, and it can be changed with `GROQ_MODEL`.
+For repeatable demos without an API key, set `LLM_PROVIDER=fake`.
 If Groq is unavailable or the API key is missing, the agent falls back to a simple non-AI response so alert handling still continues.
 
 ## Architecture
@@ -59,6 +60,62 @@ If Groq is unavailable or the API key is missing, the agent falls back to a simp
 - `ai-remediation-agent` receives alerts, enriches them with metrics/logs/traces, analyzes them with Groq, and sends recommendations to Slack
 - `jaeger` provides distributed trace visibility
 - `webhook-logger` is available for alert delivery demos
+
+### Request Flow
+
+```mermaid
+graph TD
+    LG[load-generator] -->|POST /order| AG[api-gateway]
+    AG -->|POST /create| OS[order-service]
+    OS -->|POST /charge| PS[payment-service]
+```
+
+### Observability Flow
+
+```mermaid
+graph TD
+    AG[api-gateway] -->|stdout JSON logs| PT[promtail]
+    OS[order-service] -->|stdout JSON logs| PT
+    PS[payment-service] -->|stdout JSON logs| PT
+    PT -->|push logs| LK[loki]
+
+    AG -->|OTLP traces + metrics| OC[otel-collector]
+    OS -->|OTLP traces + metrics| OC
+    PS -->|OTLP traces + metrics| OC
+
+    OC -->|traces| JG[jaeger]
+    OC -->|metrics endpoint :8889| PM[prometheus]
+    OC -.->|optional OTLP export| NR[newrelic]
+
+    PM -->|datasource| GF[grafana]
+    LK -->|datasource| GF
+```
+
+### AI Remediation Flow
+
+```mermaid
+graph TD
+    PM[prometheus] -->|alert rules fire| AM[alertmanager]
+    AM -->|webhook /alerts| AI[ai-remediation-agent]
+
+    AI -->|query metrics| PM
+    AI -->|query logs| LK[loki]
+    AI -->|query traces| JG[jaeger]
+
+    AI -->|evidence prompt| LLM[Groq or fake LLM]
+    LLM -->|JSON analysis| AI
+
+    AI -->|low-risk actions auto-run| DT[MCP-style Docker tools]
+    AI -->|high-risk approval request| SL[Slack]
+    SL -->|approve or reject| AI
+    AI -->|approved restart/log action| DT
+
+    DT -.-> AG[api-gateway]
+    DT -.-> OS[order-service]
+    DT -.-> PS[payment-service]
+```
+
+The Docker remediation layer is MCP-style, not a full standalone MCP server. See `docs/mcp-tool-boundary.md`.
 
 ## Project Structure
 
@@ -172,21 +229,34 @@ curl -X POST http://localhost:3000/order \
   -d '{"item":"laptop","quantity":2,"userId":"user-001"}'
 ```
 
+For a guided learning flow, see `docs/demo-runbook.md`.
+
 ## AI Setup
 
-The AI layer uses the Groq free tier plus Slack.
+The AI layer can use Groq or fake offline mode plus Slack.
 
-### 1. Groq API Key
+### 1. Choose LLM Provider
+
+For real Groq analysis:
 
 Create a Groq account and add this to your `.env` file:
 
 ```bash
+LLM_PROVIDER=groq
 GROQ_API_KEY=gsk_your_api_key_here
 GROQ_MODEL=qwen/qwen3-32b
 GROQ_MAX_TOKENS=1024
 ```
 
 `GROQ_MODEL` can be set to another free-tier model such as `llama-3.1-8b-instant` if you need to compare behavior. `GROQ_MAX_TOKENS` keeps responses predictable against Groq's per-minute token budget.
+
+For repeatable local demos without a Groq key:
+
+```bash
+LLM_PROVIDER=fake
+```
+
+Fake mode returns deterministic JSON in the same shape as the Groq response, so evidence collection, policy checks, Slack approval, and Docker actions still run.
 
 ### 2. Slack App
 
@@ -227,6 +297,9 @@ For a firing alert, the agent aims to produce output like this:
 - Order Service health: `http://localhost:3001/health`
 - Payment Service health: `http://localhost:3002/health`
 - AI Remediation Agent health: `http://localhost:3003/health`
+- AI Remediation Agent dashboard: `http://localhost:3003/dashboard`
+- AI incidents: `http://localhost:3003/incidents`
+- AI incident evidence: `http://localhost:3003/incidents/<incident-id>/evidence`
 - Prometheus: `http://localhost:9090`
 - Prometheus alerts: `http://localhost:9090/alerts`
 - Grafana: `http://localhost:3030`
@@ -245,6 +318,22 @@ The built-in load generator:
 
 This keeps the demo active enough to populate dashboards and produce occasional alert activity.
 
+## Demo Fault Injection
+
+`payment-service` has deterministic demo controls:
+
+```bash
+curl http://localhost:3002/test/faults
+curl -X POST http://localhost:3002/test/fail-payments/on
+curl -X POST http://localhost:3002/test/fail-payments/off
+curl -X POST http://localhost:3002/test/latency/on \
+  -H "Content-Type: application/json" \
+  -d '{"latencyMs":1200}'
+curl -X POST http://localhost:3002/test/latency/off
+```
+
+Use these with `docs/demo-runbook.md` to create predictable incidents during demos.
+
 ## Observability Flow
 
 - services export traces and metrics to the OpenTelemetry Collector over OTLP gRPC on `4317`
@@ -255,6 +344,17 @@ This keeps the demo active enough to populate dashboards and produce occasional 
 - Alertmanager sends alert webhooks to the AI remediation agent
 - the AI agent pulls Prometheus snapshots, Loki logs, and Jaeger traces, then sends one evidence bundle to Groq
 - log records include `trace_id` and `span_id` so Loki entries can be correlated back to Jaeger traces
+
+## Evidence Viewer
+
+The AI agent stores evidence on each processed incident. List incidents, then open the evidence endpoint for one ID:
+
+```bash
+curl http://localhost:3003/incidents
+curl http://localhost:3003/incidents/<incident-id>/evidence
+```
+
+This shows the context that was sent to the LLM: alert labels, metrics, logs, traces, correlated signals, missing signals, and the resulting analysis.
 
 ## Troubleshooting
 

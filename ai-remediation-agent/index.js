@@ -19,6 +19,8 @@ const { listActions } = require('./approval-store')
 
 const app = express();
 const PORT = process.env.PORT || 3003;
+const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'groq').toLowerCase();
+const GROQ_MODEL = process.env.GROQ_MODEL || 'qwen/qwen3-32b';
 const PROMETHEUS_URL = process.env.PROMETHEUS_URL || 'http://prometheus:9090';
 const LOKI_URL = process.env.LOKI_URL || 'http://loki:3100';
 const JAEGER_URL = process.env.JAEGER_URL || 'http://jaeger:16686';
@@ -612,6 +614,7 @@ async function processIncident(incident) {
     console.log('Alert Context:', alertContext);
     console.log('Collecting evidence from Prometheus, Loki, and Jaeger...');
     const evidence = await collectEvidence(alert, alertContext);
+    incident.evidence = evidence;
     console.log('Evidence Bundle:', {
         service: evidence.alert.service,
         metricGroups: evidence.metrics.snapshot.length,
@@ -619,8 +622,9 @@ async function processIncident(incident) {
         traces: evidence.traces.totalTraces
     });
 
-    console.log('Analyzing with Groq...');
+    console.log(`Analyzing with ${LLM_PROVIDER === 'fake' ? 'fake LLM provider' : 'Groq'}...`);
     const analysis = ensureRequiredRemediationActions(alertContext, await analyzeAlert(alertContext, evidence));
+    incident.analysis = analysis;
     console.log('Analysis Result:', analysis);
 
     const actionRequests = [];
@@ -635,7 +639,13 @@ async function processIncident(incident) {
 }
 
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok', service: 'ai-remediation-agent' });
+    res.json({
+        status: 'ok',
+        service: 'ai-remediation-agent',
+        llmProvider: LLM_PROVIDER,
+        llmEnabled: LLM_PROVIDER === 'fake' || Boolean(process.env.GROQ_API_KEY),
+        groqModel: LLM_PROVIDER === 'groq' ? GROQ_MODEL : null
+    });
 });
 
 app.post('/alerts', async (req, res) => {
@@ -772,6 +782,28 @@ app.get('/approvals', (req, res) => {
 app.get('/incidents', (req, res) => {
     res.json({
         incidents: listIncidents()
+    });
+});
+
+app.get('/incidents/:id/evidence', (req, res) => {
+    const incident = listIncidents().find((item) => item.id === req.params.id);
+
+    if (!incident) {
+        res.status(404).json({ error: 'Incident not found' });
+        return;
+    }
+
+    res.json({
+        id: incident.id,
+        status: incident.status,
+        alertname: incident.alertname,
+        service: incident.service,
+        severity: incident.severity,
+        evidence: incident.evidence || null,
+        analysis: incident.analysis || null,
+        message: incident.evidence
+            ? 'Evidence collected for this incident.'
+            : 'Evidence has not been collected yet. The incident may still be queued or waiting for processing.'
     });
 });
 

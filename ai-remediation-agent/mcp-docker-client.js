@@ -4,6 +4,9 @@ const { ALLOWED_SERVICES } = require('./remediation-policy');
 
 const execFileAsync = promisify(execFile);
 
+// This is an MCP-style local tool adapter, not a full MCP protocol client.
+// It keeps Docker actions behind allowlisted tool names so the LLM never
+// executes arbitrary shell commands directly.
 function assertAllowedService(service) {
     if (!ALLOWED_SERVICES.has(service)) {
         throw new Error(`Service is not allowlisted: ${service}`);

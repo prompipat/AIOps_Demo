@@ -1,5 +1,6 @@
 const { Groq } = require('groq-sdk');
 
+const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'groq').toLowerCase();
 const GROQ_MODEL = process.env.GROQ_MODEL || 'qwen/qwen3-32b';
 const MAX_PROMPT_CHARS = Number(process.env.GROQ_PROMPT_MAX_CHARS || 12000);
 const MAX_TEXT_CHARS = Number(process.env.GROQ_TEXT_MAX_CHARS || 240);
@@ -284,7 +285,69 @@ async function createGroqCompletion(groq, request) {
   }
 }
 
+function createFakeAnalysis(alertContext, evidence) {
+  const service = alertContext.service || 'unknown';
+  const alertName = alertContext.name || 'UnknownAlert';
+  const isServiceDown = /down|unavailable|no traffic/i.test(`${alertName} ${alertContext.summary} ${alertContext.description}`);
+  const logErrors = evidence?.logs?.errorCount ?? 0;
+  const traceCount = evidence?.traces?.totalTraces ?? 0;
+  const metricNames = (evidence?.metrics?.snapshot || [])
+    .filter((item) => item?.result?.length)
+    .map((item) => `${item.name}=${item.result[0].value}`);
+
+  return {
+    rootCause: isServiceDown
+      ? `${service} appears unavailable or is not processing expected traffic.`
+      : `${alertName} is firing for ${service}; demo mode is using collected evidence to create a deterministic analysis.`,
+    confidence: isServiceDown ? 80 : 65,
+    evidenceUsed: {
+      metrics: metricNames.slice(0, 3),
+      logs: logErrors > 0
+        ? [`${logErrors} error log line(s) were found for ${service}.`]
+        : [],
+      traces: traceCount > 0
+        ? [`${traceCount} trace(s) were found for ${service}.`]
+        : []
+    },
+    traceIds: [...new Set(evidence?.traces?.traceIds || [])],
+    correlatedSignals: [
+      `${alertName} alert is firing for ${service}.`,
+      ...((evidence?.correlation?.signals || []).slice(0, 3))
+    ],
+    recommendedActions: [
+      isServiceDown
+        ? {
+            priority: 1,
+            action: 'restart_service',
+            description: `Restart ${service} because the service-down style alert is firing.`,
+            reason: 'Fake LLM mode treats service-down alerts as lab-approved restart candidates that still require human approval.',
+            service
+          }
+        : {
+            priority: 1,
+            action: 'check_logs',
+            description: `Check recent ${service} logs for demo failure patterns.`,
+            reason: 'Logs are the safest first step for a non-service-down alert in fake LLM mode.',
+            service
+          },
+      {
+        priority: 2,
+        action: 'view_metrics',
+        description: `Review Prometheus metrics for ${service}.`,
+        reason: 'Metric snapshots show whether the alert is still active or recovering.',
+        service
+      }
+    ],
+    missingSignals: [...new Set(evidence?.missingSignals || [])]
+  };
+}
+
 async function analyzeAlert(alertContext, evidence = null) {
+  if (LLM_PROVIDER === 'fake') {
+    console.log('Using fake LLM provider. Groq will not be called.');
+    return createFakeAnalysis(alertContext, evidence);
+  }
+
   try {
     if (!process.env.GROQ_API_KEY) {
         throw new Error('GROQ_API_KEY environment variable is not set');
