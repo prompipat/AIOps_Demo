@@ -5,6 +5,10 @@ const {
     getAction
 } = require('./approval-store');
 const { callDockerTool } = require('./mcp-docker-client');
+const { validateRestartAction } = require('./remediation-validator');
+const { updateIncident } = require('./incident-queue');
+
+let validationDependencies = {};
 
 function normalizeAction(action, alertContext) {
     const rawActionName = String(action.action || '').trim().toLowerCase();
@@ -70,6 +74,7 @@ async function handleRecommendedAction(action, alertContext) {
             status: 'blocked',
             risk: 'unknown',
             requiresApproval: false,
+            incidentId: alertContext.incidentId,
             reason: policy.reason
         });
     }
@@ -83,6 +88,7 @@ async function handleRecommendedAction(action, alertContext) {
         description: normalizedAction.description,
         reason: normalizedAction.reason,
         alertname: alertContext.name,
+        incidentId: alertContext.incidentId,
         status: policy.requiresApproval ? 'pending_approval' : 'auto_executing'
     });
 
@@ -100,8 +106,18 @@ async function executeActionRequest(id, actor) {
         throw new Error(`Action not found: ${id}`);
     }
 
-    if (!['pending_approval', 'auto_executing', 'approved'].includes(request.status)) {
+    if (!['auto_executing', 'approved', 'validating'].includes(request.status)) {
         throw new Error(`Action ${id} cannot execute from status ${request.status}`);
+    }
+
+    const policy = evaluatePolicy(request);
+
+    if (!policy.allowed) {
+        return updateAction(id, {
+            status: 'blocked',
+            error: policy.reason,
+            actor
+        });
     }
 
     updateAction(id, {
@@ -145,10 +161,46 @@ async function approveAction(id, actor) {
         throw new Error(`Action ${id} is not pending approval`);
     }
 
+    if (request.expiresAt && Date.now() >= Date.parse(request.expiresAt)) {
+        return updateAction(id, {
+            status: 'expired',
+            actor,
+            validation: {
+                outcome: 'expired',
+                reason: 'Approval arrived after the action expiry time.',
+                observations: []
+            }
+        });
+    }
+
     updateAction(id, {
-        status: 'approved',
-        approvedBy: actor
+        status: 'validating',
+        approvedBy: actor,
+        actor
     });
+
+    if (request.action !== 'restart_service') {
+        return executeActionRequest(id, actor);
+    }
+
+    const validation = await validateRestartAction(request, validationDependencies);
+    updateAction(id, { validation, actor });
+
+    if (!validation.shouldExecute) {
+        if (['cancelled_resolved', 'cancelled_already_recovered'].includes(validation.outcome)) {
+            updateIncident(request.incidentId, {
+                status: 'recovered',
+                recoveredAt: new Date().toISOString(),
+                recoveryReason: validation.reason
+            });
+        }
+
+        return updateAction(id, {
+            status: validation.outcome,
+            validation,
+            actor
+        });
+    }
 
     return executeActionRequest(id, actor);
 }
@@ -170,9 +222,14 @@ function rejectAction(id, actor) {
     });
 }
 
+function setValidationDependencies(dependencies = {}) {
+    validationDependencies = dependencies;
+}
+
 module.exports = {
     handleRecommendedAction,
     approveAction,
     rejectAction,
-    executeActionRequest
+    executeActionRequest,
+    setValidationDependencies
 }

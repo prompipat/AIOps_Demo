@@ -300,6 +300,8 @@ For a firing alert, the agent aims to produce output like this:
 - AI Remediation Agent dashboard: `http://localhost:3003/dashboard`
 - AI incidents: `http://localhost:3003/incidents`
 - AI incident evidence: `http://localhost:3003/incidents/<incident-id>/evidence`
+- Remediation approvals: `http://localhost:3003/approvals`
+- Remediation audit events: `http://localhost:3003/audit-events`
 - Prometheus: `http://localhost:9090`
 - Prometheus alerts: `http://localhost:9090/alerts`
 - Grafana: `http://localhost:3030`
@@ -355,6 +357,11 @@ curl http://localhost:3003/incidents/<incident-id>/evidence
 ```
 
 This shows the context that was sent to the LLM: alert labels, metrics, logs, traces, correlated signals, missing signals, and the resulting analysis.
+
+Restart approvals expire after 10 minutes. Before an approved restart executes,
+the agent checks Docker, Prometheus, and Alertmanager twice, 30 seconds apart. A
+healthy or recovered service cancels the restart; failed or inconsistent checks
+fail closed and are recorded in the approval and audit endpoints.
 
 ## Troubleshooting
 

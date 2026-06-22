@@ -15,7 +15,7 @@ const {
     approveAction,
     rejectAction
 } = require('./action-orchestrator')
-const { listActions } = require('./approval-store')
+const { listActions, listAuditEvents } = require('./approval-store')
 
 const app = express();
 const PORT = process.env.PORT || 3003;
@@ -610,6 +610,7 @@ async function processIncident(incident) {
     console.log(`Processing queued incident: ${incident.alertname} for ${incident.service} (${incident.id})`);
 
     const alertContext = buildAlertContext(alert);
+    alertContext.incidentId = incident.id;
 
     console.log('Alert Context:', alertContext);
     console.log('Collecting evidence from Prometheus, Loki, and Jaeger...');
@@ -777,6 +778,10 @@ app.get('/approvals', (req, res) => {
     res.json({
         actions: listActions()
     });
+});
+
+app.get('/audit-events', (req, res) => {
+    res.json({ events: listAuditEvents() });
 });
 
 app.get('/incidents', (req, res) => {

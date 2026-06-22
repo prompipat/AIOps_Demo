@@ -60,6 +60,9 @@ async function callDockerTool(toolName, args = {}) {
         case 'docker_compose.ps':
             return composePs();
 
+        case 'docker_compose.inspect_service':
+            return inspectServiceState(args.service);
+
         default:
             throw new Error(`Unsupported MCP tool: ${toolName}`);
     }
@@ -75,6 +78,49 @@ async function getLogs(service, tail) {
     ]);
 
     return stdout;
+}
+
+async function inspectServiceState(service) {
+    assertAllowedService(service);
+
+    const args = [
+        'ps',
+        '-a',
+        '-q',
+        '--filter',
+        `label=com.docker.compose.service=${service}`
+    ];
+    const { stdout } = await execFileAsync('docker', args);
+    const containerId = stdout.trim().split(/\r?\n/).filter(Boolean)[0];
+
+    if (!containerId) {
+        return {
+            exists: false,
+            running: false,
+            healthy: false,
+            health: 'missing',
+            basis: 'container_missing'
+        };
+    }
+
+    const inspection = await execFileAsync('docker', [
+        'inspect',
+        '-f',
+        '{{json .State}}',
+        containerId
+    ]);
+    const state = JSON.parse(inspection.stdout.trim());
+    const health = state.Health?.Status || null;
+    const running = state.Running === true;
+    const healthy = running && (health ? health === 'healthy' : true);
+
+    return {
+        exists: true,
+        running,
+        healthy,
+        health: health || (running ? 'not_configured' : 'stopped'),
+        basis: health ? 'docker_healthcheck' : 'container_running_state'
+    };
 }
 
 async function restartService(service) {
@@ -101,5 +147,6 @@ async function composePs() {
 }
 
 module.exports = {
-    callDockerTool
+    callDockerTool,
+    inspectServiceState
 }

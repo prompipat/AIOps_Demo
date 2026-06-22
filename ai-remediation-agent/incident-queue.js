@@ -167,6 +167,17 @@ function listIncidents() {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+function updateIncident(id, patch) {
+  const incident = Array.from(incidentsByKey.values()).find((item) => item.id === id);
+
+  if (!incident) {
+    return null;
+  }
+
+  Object.assign(incident, patch, { updatedAt: nowIso() });
+  return incident;
+}
+
 function startIncidentWorker(handler) {
   processor = handler;
   kickWorker();
@@ -217,6 +228,7 @@ module.exports = {
   enqueueAlerts,
   startIncidentWorker,
   listIncidents,
+  updateIncident,
   getAlertName,
   getAlertService
 };

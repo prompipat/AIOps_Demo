@@ -2,6 +2,7 @@ const crypto = require('crypto');
 
 const actions = new Map();
 const auditEvents = [];
+const ACTION_APPROVAL_TTL_MS = Number(process.env.ACTION_APPROVAL_TTL_MS || 10 * 60 * 1000);
 
 function now() {
     return new Date().toISOString();
@@ -9,6 +10,7 @@ function now() {
 
 function createActionRequest(input) {
     const id = crypto.randomUUID();
+    const createdAt = now();
 
     const request = {
         id,
@@ -20,8 +22,13 @@ function createActionRequest(input) {
         reason: input.reason || '',
         description: input.description || '',
         alertname: input.alertname || '',
-        createdAt: now(),
-        updatedAt: now(),
+        incidentId: input.incidentId || null,
+        createdAt,
+        updatedAt: createdAt,
+        expiresAt: input.requiresApproval
+            ? new Date(Date.parse(createdAt) + ACTION_APPROVAL_TTL_MS).toISOString()
+            : null,
+        validation: null,
         result: null,
         error: null,
     };
@@ -46,7 +53,11 @@ function updateAction(id, patch) {
     };
 
     actions.set(id, updated);
-    addAudit(id, 'updated', patch);
+    addAudit(id, 'updated', {
+        ...patch,
+        previousStatus: current.status,
+        newStatus: updated.status
+    });
 
     return updated;
 }
@@ -74,11 +85,17 @@ function listAuditEvents() {
     return [...auditEvents];
 }
 
+function resetStore() {
+    actions.clear();
+    auditEvents.length = 0;
+}
+
 module.exports = {
     createActionRequest,
     updateAction,
     getAction,
     listActions,
     addAudit,
-    listAuditEvents
+    listAuditEvents,
+    resetStore
 };
