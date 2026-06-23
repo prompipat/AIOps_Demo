@@ -22,6 +22,15 @@ const faultState = {
   extraLatencyMs: 0
 };
 
+function renderPrometheusMetrics() {
+  return [
+    '# HELP aiops_lab_payment_service_info Static info metric for payment-service direct scrape health.',
+    '# TYPE aiops_lab_payment_service_info gauge',
+    'aiops_lab_payment_service_info{service="payment-service"} 1',
+    ''
+  ].join('\n');
+}
+
 function buildLog(service, level, msg, extra = {}, span = null) {
   const spanContext = span?.spanContext?.() || null;
   return JSON.stringify({
@@ -103,6 +112,9 @@ app.post('/charge', async (req, res) => {
 });
 
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'payment-service' }));
+app.get('/metrics', (_, res) => {
+  res.type('text/plain; version=0.0.4; charset=utf-8').send(renderPrometheusMetrics());
+});
 app.get('/test/faults', (_, res) => res.json({
   service: 'payment-service',
   faults: faultState

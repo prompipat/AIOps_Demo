@@ -19,6 +19,11 @@ const ACTION_POLICY = {
     }
 };
 
+function canRestartForAlert(alertname) {
+    return String(alertname || '').endsWith('TargetDown')
+        || alertname === 'ManualRestartApprovalTest';
+}
+
 function evaluatePolicy(actionRequest) {
     const actionName = actionRequest.action;
     const service = actionRequest.service;
@@ -39,6 +44,13 @@ function evaluatePolicy(actionRequest) {
         };
     }
 
+    if (actionName === 'restart_service' && !canRestartForAlert(actionRequest.alertname)) {
+        return {
+            allowed: false,
+            reason: `Restart is only allowed for target-down alerts; received ${actionRequest.alertname || 'unknown alert'}`
+        };
+    }
+
     return {
         allowed: true,
         action: actionName,
@@ -50,6 +62,7 @@ function evaluatePolicy(actionRequest) {
 
 module.exports = {
     evaluatePolicy,
+    canRestartForAlert,
     ALLOWED_SERVICES,
     ACTION_POLICY
 }

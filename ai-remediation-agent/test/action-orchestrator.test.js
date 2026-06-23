@@ -8,6 +8,7 @@ const {
     updateAction
 } = require('../approval-store');
 const {
+    handleRecommendedAction,
     approveAction,
     setValidationDependencies
 } = require('../action-orchestrator');
@@ -17,7 +18,7 @@ function pendingRestart() {
         status: 'pending_approval',
         action: 'restart_service',
         service: 'payment-service',
-        alertname: 'PaymentServiceDown',
+        alertname: 'PaymentServiceTargetDown',
         risk: 'high',
         requiresApproval: true,
         incidentId: 'incident-test'
@@ -27,6 +28,38 @@ function pendingRestart() {
 test.beforeEach(() => {
     resetStore();
     setValidationDependencies({});
+});
+
+test('creates pending restart approval for target-down alerts', async () => {
+    const result = await handleRecommendedAction({
+        action: 'restart_service',
+        service: 'payment-service',
+        reason: 'payment target is down'
+    }, {
+        name: 'PaymentServiceTargetDown',
+        service: 'payment-service',
+        incidentId: 'incident-target-down'
+    });
+
+    assert.equal(result.status, 'pending_approval');
+    assert.equal(result.risk, 'high');
+    assert.equal(result.alertname, 'PaymentServiceTargetDown');
+});
+
+test('blocks restart approval for no-traffic alerts', async () => {
+    const result = await handleRecommendedAction({
+        action: 'restart_service',
+        service: 'payment-service',
+        reason: 'payment traffic is missing'
+    }, {
+        name: 'PaymentServiceDown',
+        service: 'payment-service',
+        incidentId: 'incident-no-traffic'
+    });
+
+    assert.equal(result.status, 'blocked');
+    assert.equal(result.risk, 'unknown');
+    assert.match(result.reason, /target-down alerts/);
 });
 
 test('expires stale approval without running validation', async () => {

@@ -64,17 +64,19 @@ function toolForAction(action) {
 }
 
 async function handleRecommendedAction(action, alertContext) {
-    const normalizedAction = normalizeAction(action, alertContext);
+    const normalizedAction = {
+        ...normalizeAction(action, alertContext),
+        alertname: alertContext.name,
+        incidentId: alertContext.incidentId
+    };
     const policy = evaluatePolicy(normalizedAction);
 
     if (!policy.allowed) {
         return createActionRequest({
             ...normalizedAction,
-            alertname: alertContext.name,
             status: 'blocked',
             risk: 'unknown',
             requiresApproval: false,
-            incidentId: alertContext.incidentId,
             reason: policy.reason
         });
     }
@@ -87,8 +89,8 @@ async function handleRecommendedAction(action, alertContext) {
         requiresApproval: policy.requiresApproval,
         description: normalizedAction.description,
         reason: normalizedAction.reason,
-        alertname: alertContext.name,
-        incidentId: alertContext.incidentId,
+        alertname: normalizedAction.alertname,
+        incidentId: normalizedAction.incidentId,
         status: policy.requiresApproval ? 'pending_approval' : 'auto_executing'
     });
 

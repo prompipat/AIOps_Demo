@@ -196,11 +196,18 @@ The current rules include:
 
 - `HighPaymentErrorRate`
 - `HighAPILatency`
+- `ApiGatewayTargetDown`
+- `OrderServiceTargetDown`
 - `PaymentServiceDown`
+- `PaymentServiceTargetDown`
 - `LowOrderSuccessRate`
 
 These alerts are a good way to test the AI workflow because they provide enough context for Groq to suggest a likely cause and the next action to take.
 The current AI workflow is strongest when the alert maps cleanly to a service, because the agent can then pull the right metrics, logs, and traces for that service.
+The `*TargetDown` alerts are the production-like service availability alerts:
+they use Prometheus target health instead of business traffic volume, so they
+stay firing while the affected service is actually unreachable. These are the
+alerts that can create restart approval actions.
 
 ## Alert Timing Summary
 
@@ -210,37 +217,95 @@ human approves or rejects a remediation action.
 
 | Stage | Current timing | What it means during tests |
 | --- | --- | --- |
-| Prometheus scrape | `10s` | Prometheus scrapes collector metrics every 10 seconds. |
+| Prometheus scrape | `10s` | Prometheus scrapes configured targets, including `otel-collector`, `api-gateway`, `order-service`, and `payment-service`, every 10 seconds. |
 | Prometheus rule evaluation | `15s` | Alert expressions are evaluated every 15 seconds. |
 | `HighPaymentErrorRate` | `for: 1m` | Error rate must stay above threshold for about 1 minute before firing. |
-| `PaymentServiceDown` | `for: 1m` | No payment charge traffic must persist for about 1 minute before firing. |
+| `ApiGatewayTargetDown` | `for: 1m` | Prometheus must be unable to scrape `api-gateway` for about 1 minute before firing. |
+| `OrderServiceTargetDown` | `for: 1m` | Prometheus must be unable to scrape `order-service` for about 1 minute before firing. |
+| `PaymentServiceDown` | `for: 1m` | No payment charge traffic must persist for about 1 minute before firing. This can go inactive if the metric series disappears. |
+| `PaymentServiceTargetDown` | `for: 1m` | Prometheus must be unable to scrape `payment-service` for about 1 minute before firing. |
 | `HighAPILatency` | `for: 2m` | p99 latency must stay high for about 2 minutes before firing. |
 | `LowOrderSuccessRate` | `for: 2m` | Order success rate must stay low for about 2 minutes before firing. |
 | Alertmanager first send | `group_wait: 20s` | Alertmanager waits 20 seconds before sending the first webhook for a new group. |
 | Alertmanager grouped updates | `group_interval: 5m` | New alerts in the same service/team group may be batched for up to 5 minutes. |
-| Alertmanager repeat | `repeat_interval: 1h` | If the same alert remains firing, it is sent again about every 1 hour. |
+| Alertmanager repeat | critical `15m`, default/warning `1h` | Critical alerts repeat about every 15 minutes; warning/default alerts repeat about every 1 hour. |
 | Agent queue processing | `90s` | The AI agent starts queued incident processing at most once every 90 seconds. |
 | Agent dedupe | `10m` | The same `alertname:service` incident is ignored for 10 minutes after it was processed. |
 | Approval expiry | `10m` | A pending high-risk approval expires after 10 minutes. |
 | Restart validation | `2` checks, `30s` apart | Before an approved restart, the agent checks Docker, Prometheus, and Alertmanager twice. |
 | Dashboard refresh | `3s` | The local approval dashboard reloads action status every 3 seconds. |
 
+### Alert Timing Diagram
+
+```mermaid
+sequenceDiagram
+    participant S as Service / Metrics
+    participant P as Prometheus
+    participant A as Alertmanager
+    participant R as AI Agent
+    participant D as Dashboard / Slack
+
+    S->>P: Metrics scraped every 10s
+    loop Every 15s
+        P->>P: Evaluate alert rules
+    end
+    P->>P: Condition stays true for 1m or 2m
+    P->>A: Alert becomes firing
+    A->>A: Wait group_wait 20s
+    A->>R: POST /alerts
+    R->>R: Queue and dedupe by alertname:service
+    R->>R: Process queued incident within up to 90s
+    R->>P: Query metrics evidence
+    R->>R: Query Loki logs and Jaeger traces
+    R->>R: Analyze with LLM and policy
+    R->>D: Create action / approval request
+    D->>D: Dashboard refreshes every 3s
+```
+
+```mermaid
+flowchart TD
+    A[Approval request created] --> B{Human decision}
+    B -->|Reject| C[Action status: rejected]
+    C --> D[No restart, no silence, alert state unchanged]
+    D --> E{Alert still firing?}
+    E -->|Yes| F[Alertmanager repeats: critical 15m, warning/default 1h]
+    E -->|No| G[Alertmanager sends resolved; agent does not queue it]
+
+    B -->|Approve| H[Action status: validating]
+    H --> I[Check Docker, Prometheus, Alertmanager twice, 30s apart]
+    I --> J{Service unhealthy and Prometheus firing?}
+    J -->|Yes| K[Execute restart]
+    K --> L[Action status: succeeded or failed]
+    J -->|No| M[Cancel restart]
+    M --> N[cancelled_resolved, cancelled_already_recovered, alert_state_mismatch, or validation_failed]
+```
+
 ### Expected Timing By Scenario
 
-For `PaymentServiceDown`, stopping `payment-service` usually creates an
+For target-down alerts, stopping a directly scraped service usually creates an
 approval request after roughly 1.5 to 4 minutes:
 
-1. Prometheus needs about 1 minute of failing condition.
-2. Alertmanager waits another 20 seconds before the first webhook.
-3. The agent may wait up to 90 seconds for the incident queue worker.
-4. Evidence collection and LLM analysis add a small extra delay.
+1. Prometheus scrape sees `up{job="<service-job>"} == 0`.
+2. Prometheus needs about 1 minute of failing condition.
+3. Alertmanager waits another 20 seconds before the first webhook.
+4. The agent may wait up to 90 seconds for the incident queue worker.
+5. Evidence collection and LLM analysis add a small extra delay.
+
+Expected target-down mapping:
+
+| Stopped service | Firing alert | Restart approval service |
+| --- | --- | --- |
+| `api-gateway` | `ApiGatewayTargetDown` | `api-gateway` |
+| `order-service` | `OrderServiceTargetDown` | `order-service` |
+| `payment-service` | `PaymentServiceTargetDown` | `payment-service` |
 
 If a user rejects the restart action, only that action is rejected. Reject does
 not silence Alertmanager, change Prometheus state, or recover the service. If
 the alert is still firing, Alertmanager sends it again at the next
-`repeat_interval`, which is about 1 hour from the previous notification. Because
-the agent dedupe window is 10 minutes, that repeated webhook can create a new
-incident and a new approval request.
+`repeat_interval`: about 15 minutes for critical alerts and about 1 hour for
+warning/default alerts. Because the agent dedupe window is 10 minutes, a
+critical repeat can create a new incident and a new approval request after the
+previous action has expired.
 
 If a user approves a restart after a delay, the agent does not restart
 immediately. It first validates the live state. If the service is already

@@ -5,6 +5,9 @@ const INCIDENT_DEDUPE_TTL_MS = Number(process.env.INCIDENT_DEDUPE_TTL_MS || 10 *
 const INCIDENT_QUEUE_MAX_SIZE = Number(process.env.INCIDENT_QUEUE_MAX_SIZE || 50);
 
 const ALERT_PRIORITY = {
+  ApiGatewayTargetDown: 110,
+  OrderServiceTargetDown: 110,
+  PaymentServiceTargetDown: 110,
   PaymentServiceDown: 100,
   HighPaymentErrorRate: 80,
   LowOrderSuccessRate: 50,

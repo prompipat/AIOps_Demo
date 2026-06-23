@@ -21,6 +21,15 @@ const latencyHistogram = meter.createHistogram('api.request.duration', {
   unit: 'ms',
 });
 
+function renderPrometheusMetrics() {
+  return [
+    '# HELP aiops_lab_api_gateway_info Static info metric for api-gateway direct scrape health.',
+    '# TYPE aiops_lab_api_gateway_info gauge',
+    'aiops_lab_api_gateway_info{service="api-gateway"} 1',
+    ''
+  ].join('\n');
+}
+
 function buildLog(service, level, msg, extra = {}, span = null) {
   const spanContext = span?.spanContext?.() || null;
   return JSON.stringify({
@@ -90,5 +99,8 @@ app.post('/order', async (req, res) => {
 });
 
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'api-gateway' }));
+app.get('/metrics', (_, res) => {
+  res.type('text/plain; version=0.0.4; charset=utf-8').send(renderPrometheusMetrics());
+});
 
 app.listen(3000, () => console.log('api-gateway: 3000'));

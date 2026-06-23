@@ -11,6 +11,15 @@ const meter = metrics.getMeter('order-service');
 const paymentCounter = meter.createCounter('payments.attempted.total');
 const orderProcessDuration = meter.createHistogram('order.processing.duration', { unit: 'ms' });
 
+function renderPrometheusMetrics() {
+  return [
+    '# HELP aiops_lab_order_service_info Static info metric for order-service direct scrape health.',
+    '# TYPE aiops_lab_order_service_info gauge',
+    'aiops_lab_order_service_info{service="order-service"} 1',
+    ''
+  ].join('\n');
+}
+
 function buildLog(service, level, msg, extra = {}, span = null) {
   const spanContext = span?.spanContext?.() || null;
   return JSON.stringify({
@@ -82,4 +91,7 @@ app.post('/create', async (req, res) => {
 });
 
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'order-service' }));
+app.get('/metrics', (_, res) => {
+  res.type('text/plain; version=0.0.4; charset=utf-8').send(renderPrometheusMetrics());
+});
 app.listen(3001, () => console.log('order-service :3001'));

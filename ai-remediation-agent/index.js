@@ -89,6 +89,7 @@ function getMetricProfile(service, alertname) {
     if (service === 'payment-service') {
         return {
             snapshotQueries: [
+                { name: 'payment_target_up', query: 'up{job="payment-service"}' },
                 { name: 'charges_per_min', query: 'rate(aiops_lab_charges_total[5m]) * 60' },
                 { name: 'failed_charge_rate_pct', query: 'rate(aiops_lab_charges_total{status="failed"}[5m]) / rate(aiops_lab_charges_total[5m]) * 100' },
                 { name: 'charge_p99_ms', query: 'histogram_quantile(0.99, rate(aiops_lab_charge_duration_milliseconds_bucket[5m]))' },
@@ -102,6 +103,7 @@ function getMetricProfile(service, alertname) {
     if (service === 'api-gateway') {
         return {
             snapshotQueries: [
+                { name: 'api_gateway_target_up', query: 'up{job="api-gateway"}' },
                 { name: 'api_requests_per_min', query: 'rate(aiops_lab_api_requests_total[5m]) * 60' },
                 { name: 'orders_created_per_min', query: 'rate(aiops_lab_orders_created_total[5m]) * 60' },
                 { name: 'api_p99_ms', query: 'histogram_quantile(0.99, rate(aiops_lab_api_request_duration_milliseconds_bucket[5m]))' }
@@ -114,6 +116,7 @@ function getMetricProfile(service, alertname) {
     if (service === 'order-service') {
         return {
             snapshotQueries: [
+                { name: 'order_target_up', query: 'up{job="order-service"}' },
                 { name: 'payments_attempted_per_min', query: 'rate(aiops_lab_payments_attempted_total[5m]) * 60' },
                 { name: 'order_p99_ms', query: 'histogram_quantile(0.99, rate(aiops_lab_order_processing_duration_milliseconds_bucket[5m]))' }
             ],
@@ -522,6 +525,7 @@ async function collectEvidence(alert, alertContext) {
 function getViewMetricsQueries(service) {
     if (service === 'payment-service') {
         return [
+            { name: 'payment_target_up', query: 'up{job="payment-service"}' },
             { name: 'charges_per_min', query: 'rate(aiops_lab_charges_total[5m]) * 60' },
             { name: 'failed_charge_rate_pct', query: 'rate(aiops_lab_charges_total{status="failed"}[5m]) / rate(aiops_lab_charges_total[5m]) * 100' },
             { name: 'charge_p99_ms', query: 'histogram_quantile(0.99, rate(aiops_lab_charge_duration_milliseconds_bucket[5m]))' },
@@ -531,6 +535,7 @@ function getViewMetricsQueries(service) {
 
     if (service === 'api-gateway') {
         return [
+            { name: 'api_gateway_target_up', query: 'up{job="api-gateway"}' },
             { name: 'api_requests_per_min', query: 'rate(aiops_lab_api_requests_total[5m]) * 60' },
             { name: 'orders_created_per_min', query: 'rate(aiops_lab_orders_created_total[5m]) * 60' },
             { name: 'api_p99_ms', query: 'histogram_quantile(0.99, rate(aiops_lab_api_request_duration_milliseconds_bucket[5m]))' }
@@ -539,6 +544,7 @@ function getViewMetricsQueries(service) {
 
     if (service === 'order-service') {
         return [
+            { name: 'order_target_up', query: 'up{job="order-service"}' },
             { name: 'payments_attempted_per_min', query: 'rate(aiops_lab_payments_attempted_total[5m]) * 60' },
             { name: 'order_p99_ms', query: 'histogram_quantile(0.99, rate(aiops_lab_order_processing_duration_milliseconds_bucket[5m]))' }
         ];
@@ -573,12 +579,18 @@ function ensureRequiredRemediationActions(alertContext, analysis) {
 
     const hasRestart = recommendedActions.some((action) => action.action === 'restart_service');
 
-    if (alertContext.name === 'PaymentServiceDown' && !hasRestart) {
+    const requiresRestartCandidate = new Set([
+        'ApiGatewayTargetDown',
+        'OrderServiceTargetDown',
+        'PaymentServiceTargetDown'
+    ]);
+
+    if (requiresRestartCandidate.has(alertContext.name) && !hasRestart) {
         recommendedActions.unshift({
             priority: 1,
             action: 'restart_service',
             description: `Restart ${alertContext.service} because the service-down alert is firing.`,
-            reason: 'PaymentServiceDown is a lab-approved root alert that requires human approval before restarting the stopped service.',
+            reason: `${alertContext.name} is a lab-approved root alert that requires human approval before restarting the stopped service.`,
             service: alertContext.service
         });
     }
@@ -903,6 +915,9 @@ app.get('/dashboard', (req, res) => {
         <th>Risk</th>
         <th>Action</th>
         <th>Service</th>
+        <th>Created</th>
+        <th>Updated</th>
+        <th>Expires</th>
         <th>Reason</th>
         <th>Decision</th>
       </tr>
@@ -920,6 +935,19 @@ app.get('/dashboard', (req, res) => {
       const res = await fetch('/approvals');
       const data = await res.json();
 
+      const formatTime = (value) => {
+        if (!value) {
+          return '';
+        }
+
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+          return value;
+        }
+
+        return date.toLocaleString();
+      };
+
       document.getElementById('rows').innerHTML = data.actions.map(action => {
         const canDecide = action.status === 'pending_approval';
 
@@ -929,6 +957,9 @@ app.get('/dashboard', (req, res) => {
             <td class="\${action.risk}">\${action.risk}</td>
             <td>\${action.action}</td>
             <td>\${action.service || ''}</td>
+            <td>\${formatTime(action.createdAt)}</td>
+            <td>\${formatTime(action.updatedAt)}</td>
+            <td>\${formatTime(action.expiresAt)}</td>
             <td>\${action.reason || action.description || ''}</td>
             <td>
               \${canDecide ? \`

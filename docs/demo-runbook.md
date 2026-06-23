@@ -97,19 +97,22 @@ curl -X POST http://localhost:3002/test/latency/off
 
 ## 6. Scenario C: Service Down And Approved Restart
 
-Stop the payment service:
+Stop one directly scraped service, for example the payment service:
 
 ```bash
 docker stop $(docker ps -q --filter label=com.docker.compose.service=payment-service)
 ```
 
-When `PaymentServiceDown` fires, the AI agent should recommend `restart_service`. Restart is high risk, so the action waits for approval in Slack or the local dashboard:
+The same pattern works for `api-gateway`, `order-service`, and
+`payment-service`. When the matching `*TargetDown` alert fires, the AI agent
+should recommend `restart_service` for the stopped service. Restart is high
+risk, so the action waits for approval in Slack or the local dashboard:
 
 ```text
 http://localhost:3003/dashboard
 ```
 
-Approve the action and confirm the payment service starts again.
+Approve the action and confirm the stopped service starts again.
 
 ## 7. Inspect Evidence Sent To The LLM
 
