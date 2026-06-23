@@ -949,10 +949,6 @@ app.get('/dashboard', (req, res) => {
   `);
 });
 
-app.listen(PORT, () => {
-    console.log(`AI Remediation Agent listening on port ${PORT}`);
-    console.log(`Alert webhook: http://localhost:${PORT}/alerts`);
-});
 
 startIncidentWorker(processIncident);
 
@@ -965,21 +961,21 @@ app.post('/slack/events', bodyParser.urlencoded({ extended: false }), async (req
         res.status(400).send('Invalid Slack payload');
         return;
     }
-
+    
     res.status(200).send('');
-
+    
     const action = payload.actions?.[0];
     const channel = payload.channel?.id || process.env.SLACK_CHANNEL_ID;
     const actor = payload.user?.username || payload.user?.name || payload.user?.id || 'slack';
-
+    
     if (!action) {
         return;
     }
-
+    
     try {
         const metadata = JSON.parse(action.value || '{}');
         let result;
-
+        
         if (action.action_id === 'approve_remediation') {
             result = await approveAction(metadata.actionId, actor);
             await bolt.client.chat.postMessage({
@@ -988,7 +984,7 @@ app.post('/slack/events', bodyParser.urlencoded({ extended: false }), async (req
             });
             return;
         }
-
+        
         if (action.action_id === 'reject_remediation') {
             result = rejectAction(metadata.actionId, actor);
             await bolt.client.chat.postMessage({
@@ -1002,6 +998,11 @@ app.post('/slack/events', bodyParser.urlencoded({ extended: false }), async (req
             text: `Slack approval failed: ${error.message}`
         });
     }
+});
+
+app.listen(PORT, () => {
+    console.log(`AI Remediation Agent listening on port ${PORT}`);
+    console.log(`Alert webhook: http://localhost:${PORT}/alerts`);
 });
 
 module.exports = app;

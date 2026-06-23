@@ -16,7 +16,7 @@ const revenueCounter = meter.createCounter('revenue.total', {
 });
 const chargeLatency = meter.createHistogram('charge.duration', { unit: 'ms' });
 
-const FAILURE_RATE = 0.15;
+const FAILURE_RATE = 0.05;
 const faultState = {
   forceFailures: false,
   extraLatencyMs: 0

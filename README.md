@@ -202,6 +202,58 @@ The current rules include:
 These alerts are a good way to test the AI workflow because they provide enough context for Groq to suggest a likely cause and the next action to take.
 The current AI workflow is strongest when the alert maps cleanly to a service, because the agent can then pull the right metrics, logs, and traces for that service.
 
+## Alert Timing Summary
+
+The default timings are tuned for a local lab, not production paging. They are
+useful when testing whether an alert should appear, disappear, or repeat after a
+human approves or rejects a remediation action.
+
+| Stage | Current timing | What it means during tests |
+| --- | --- | --- |
+| Prometheus scrape | `10s` | Prometheus scrapes collector metrics every 10 seconds. |
+| Prometheus rule evaluation | `15s` | Alert expressions are evaluated every 15 seconds. |
+| `HighPaymentErrorRate` | `for: 1m` | Error rate must stay above threshold for about 1 minute before firing. |
+| `PaymentServiceDown` | `for: 1m` | No payment charge traffic must persist for about 1 minute before firing. |
+| `HighAPILatency` | `for: 2m` | p99 latency must stay high for about 2 minutes before firing. |
+| `LowOrderSuccessRate` | `for: 2m` | Order success rate must stay low for about 2 minutes before firing. |
+| Alertmanager first send | `group_wait: 20s` | Alertmanager waits 20 seconds before sending the first webhook for a new group. |
+| Alertmanager grouped updates | `group_interval: 5m` | New alerts in the same service/team group may be batched for up to 5 minutes. |
+| Alertmanager repeat | `repeat_interval: 1h` | If the same alert remains firing, it is sent again about every 1 hour. |
+| Agent queue processing | `90s` | The AI agent starts queued incident processing at most once every 90 seconds. |
+| Agent dedupe | `10m` | The same `alertname:service` incident is ignored for 10 minutes after it was processed. |
+| Approval expiry | `10m` | A pending high-risk approval expires after 10 minutes. |
+| Restart validation | `2` checks, `30s` apart | Before an approved restart, the agent checks Docker, Prometheus, and Alertmanager twice. |
+| Dashboard refresh | `3s` | The local approval dashboard reloads action status every 3 seconds. |
+
+### Expected Timing By Scenario
+
+For `PaymentServiceDown`, stopping `payment-service` usually creates an
+approval request after roughly 1.5 to 4 minutes:
+
+1. Prometheus needs about 1 minute of failing condition.
+2. Alertmanager waits another 20 seconds before the first webhook.
+3. The agent may wait up to 90 seconds for the incident queue worker.
+4. Evidence collection and LLM analysis add a small extra delay.
+
+If a user rejects the restart action, only that action is rejected. Reject does
+not silence Alertmanager, change Prometheus state, or recover the service. If
+the alert is still firing, Alertmanager sends it again at the next
+`repeat_interval`, which is about 1 hour from the previous notification. Because
+the agent dedupe window is 10 minutes, that repeated webhook can create a new
+incident and a new approval request.
+
+If a user approves a restart after a delay, the agent does not restart
+immediately. It first validates the live state. If the service is already
+healthy and Prometheus no longer sees the condition as firing, the restart is
+cancelled as `cancelled_resolved` or `cancelled_already_recovered`. If the
+service is unhealthy and Prometheus still sees the alert as firing across both
+validation attempts, the restart proceeds.
+
+If Alertmanager still shows a firing alert while Docker and Prometheus indicate
+the service has recovered, the agent treats that as propagation lag and cancels
+the restart. Alertmanager will naturally send a resolved notification once it
+catches up, but resolved webhooks are not queued as new incidents.
+
 ## Quick Start
 
 1. Start the full stack:
