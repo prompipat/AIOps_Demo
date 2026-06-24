@@ -10,6 +10,7 @@ const {
 const {
     handleRecommendedAction,
     approveAction,
+    normalizeServiceName,
     setValidationDependencies
 } = require('../action-orchestrator');
 
@@ -33,7 +34,7 @@ test.beforeEach(() => {
 test('creates pending restart approval for target-down alerts', async () => {
     const result = await handleRecommendedAction({
         action: 'restart_service',
-        service: 'payment-service',
+        service: 'payment-service:3002',
         reason: 'payment target is down'
     }, {
         name: 'PaymentServiceTargetDown',
@@ -44,6 +45,40 @@ test('creates pending restart approval for target-down alerts', async () => {
     assert.equal(result.status, 'pending_approval');
     assert.equal(result.risk, 'high');
     assert.equal(result.alertname, 'PaymentServiceTargetDown');
+    assert.equal(result.service, 'payment-service');
+});
+
+test('normalizes service host and URL aliases', () => {
+    assert.equal(normalizeServiceName('api-gateway:3000'), 'api-gateway');
+    assert.equal(normalizeServiceName('http://order-service:3001/metrics'), 'order-service');
+    assert.equal(normalizeServiceName('https://payment-service:3002/health'), 'payment-service');
+});
+
+test('creates pending restart approval for other target-down services with host ports', async () => {
+    const orderResult = await handleRecommendedAction({
+        action: 'restart_service',
+        service: 'order-service:3001',
+        reason: 'order target is down'
+    }, {
+        name: 'OrderServiceTargetDown',
+        service: 'order-service',
+        incidentId: 'incident-order-target-down'
+    });
+
+    const apiResult = await handleRecommendedAction({
+        action: 'restart_service',
+        service: 'api-gateway:3000',
+        reason: 'api target is down'
+    }, {
+        name: 'ApiGatewayTargetDown',
+        service: 'api-gateway',
+        incidentId: 'incident-api-target-down'
+    });
+
+    assert.equal(orderResult.status, 'pending_approval');
+    assert.equal(orderResult.service, 'order-service');
+    assert.equal(apiResult.status, 'pending_approval');
+    assert.equal(apiResult.service, 'api-gateway');
 });
 
 test('blocks restart approval for no-traffic alerts', async () => {

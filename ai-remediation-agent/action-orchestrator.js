@@ -10,6 +10,36 @@ const { updateIncident } = require('./incident-queue');
 
 let validationDependencies = {};
 
+const SERVICE_ALIASES = {
+    'api-gateway': 'api-gateway',
+    'api_gateway': 'api-gateway',
+    'api-gateway:3000': 'api-gateway',
+    'api_gateway:3000': 'api-gateway',
+    'order-service': 'order-service',
+    'order_service': 'order-service',
+    'order-service:3001': 'order-service',
+    'order_service:3001': 'order-service',
+    'payment-service': 'payment-service',
+    'payment_service': 'payment-service',
+    'payment-service:3002': 'payment-service',
+    'payment_service:3002': 'payment-service'
+};
+
+function normalizeServiceName(service, fallbackService) {
+    const raw = String(service || fallbackService || '').trim().toLowerCase();
+
+    if (!raw) {
+        return raw;
+    }
+
+    const host = raw
+        .replace(/^https?:\/\//, '')
+        .replace(/^\/\/+/, '')
+        .split('/')[0];
+
+    return SERVICE_ALIASES[host] || SERVICE_ALIASES[host.replace(/:\d+$/, '')] || host;
+}
+
 function normalizeAction(action, alertContext) {
     const rawActionName = String(action.action || '').trim().toLowerCase();
     const aliases = {
@@ -47,7 +77,7 @@ function normalizeAction(action, alertContext) {
         ...action,
         action: normalizedActionName,
         originalAction: rawActionName,
-        service: action.service || alertContext.service
+        service: normalizeServiceName(action.service, alertContext.service)
     };
 }
 
@@ -233,5 +263,6 @@ module.exports = {
     approveAction,
     rejectAction,
     executeActionRequest,
+    normalizeServiceName,
     setValidationDependencies
 }

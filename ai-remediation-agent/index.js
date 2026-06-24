@@ -898,32 +898,151 @@ app.get('/dashboard', (req, res) => {
 <head>
   <title>AIOps Remediation Approvals</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 32px; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { border-bottom: 1px solid #ddd; padding: 10px; text-align: left; }
-    button { margin-right: 8px; padding: 6px 10px; }
-    .high { color: #b00020; font-weight: bold; }
-    .low { color: #166534; font-weight: bold; }
+    :root {
+      color-scheme: dark;
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-soft: #1f2937;
+      --border: #334155;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --green: #22c55e;
+      --green-soft: rgba(34, 197, 94, 0.14);
+      --red: #f87171;
+      --red-soft: rgba(248, 113, 113, 0.14);
+      --amber: #fbbf24;
+      --amber-soft: rgba(251, 191, 36, 0.14);
+      --blue: #60a5fa;
+      --blue-soft: rgba(96, 165, 250, 0.14);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(59, 130, 246, 0.16), transparent 32rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      padding: 32px;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 28px;
+      letter-spacing: -0.03em;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin: 0 0 24px;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: rgba(17, 24, 39, 0.9);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      min-width: 1080px;
+    }
+
+    th, td {
+      border-bottom: 1px solid rgba(51, 65, 85, 0.72);
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #0b1220;
+      color: #cbd5e1;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    tr:hover td { background: rgba(148, 163, 184, 0.06); }
+    tr:last-child td { border-bottom: 0; }
+
+    button {
+      margin: 0 8px 8px 0;
+      border: 0;
+      border-radius: 10px;
+      color: #08111f;
+      cursor: pointer;
+      font-weight: 700;
+      padding: 8px 12px;
+    }
+
+    button:hover { filter: brightness(1.08); }
+    .approve { background: var(--green); }
+    .reject { background: var(--red); }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 4px 10px;
+      white-space: nowrap;
+    }
+
+    .risk-high, .status-failed, .status-blocked, .status-validation_failed {
+      background: var(--red-soft);
+      color: var(--red);
+    }
+
+    .risk-low, .status-succeeded, .status-cancelled_resolved, .status-cancelled_already_recovered {
+      background: var(--green-soft);
+      color: var(--green);
+    }
+
+    .status-pending_approval, .status-validating, .status-executing, .status-expired, .status-alert_state_mismatch {
+      background: var(--amber-soft);
+      color: var(--amber);
+    }
+
+    .status-rejected {
+      background: var(--blue-soft);
+      color: var(--blue);
+    }
+
+    .reason { color: #d1d5db; max-width: 420px; }
+    .time { color: #cbd5e1; white-space: nowrap; }
   </style>
 </head>
 <body>
   <h1>AIOps Remediation Approvals</h1>
-  <table>
-    <thead>
-      <tr>
-        <th>Status</th>
-        <th>Risk</th>
-        <th>Action</th>
-        <th>Service</th>
-        <th>Created</th>
-        <th>Updated</th>
-        <th>Expires</th>
-        <th>Reason</th>
-        <th>Decision</th>
-      </tr>
-    </thead>
-    <tbody id="rows"></tbody>
-  </table>
+  <p class="subtitle">Human-in-the-loop actions, validation state, and approval expiry.</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Risk</th>
+          <th>Action</th>
+          <th>Service</th>
+          <th>Created</th>
+          <th>Updated</th>
+          <th>Expires</th>
+          <th>Reason</th>
+          <th>Decision</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
 
   <script>
     async function post(url) {
@@ -953,18 +1072,18 @@ app.get('/dashboard', (req, res) => {
 
         return \`
           <tr>
-            <td>\${action.status}</td>
-            <td class="\${action.risk}">\${action.risk}</td>
+            <td><span class="badge status-\${action.status}">\${action.status}</span></td>
+            <td><span class="badge risk-\${action.risk}">\${action.risk}</span></td>
             <td>\${action.action}</td>
             <td>\${action.service || ''}</td>
-            <td>\${formatTime(action.createdAt)}</td>
-            <td>\${formatTime(action.updatedAt)}</td>
-            <td>\${formatTime(action.expiresAt)}</td>
-            <td>\${action.reason || action.description || ''}</td>
+            <td class="time">\${formatTime(action.createdAt)}</td>
+            <td class="time">\${formatTime(action.updatedAt)}</td>
+            <td class="time">\${formatTime(action.expiresAt)}</td>
+            <td class="reason">\${action.reason || action.description || ''}</td>
             <td>
               \${canDecide ? \`
-                <button onclick="post('/approvals/\${action.id}/approve')">Approve</button>
-                <button onclick="post('/approvals/\${action.id}/reject')">Reject</button>
+                <button class="approve" onclick="post('/approvals/\${action.id}/approve')">Approve</button>
+                <button class="reject" onclick="post('/approvals/\${action.id}/reject')">Reject</button>
               \` : ''}
             </td>
           </tr>
