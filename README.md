@@ -187,7 +187,7 @@ The Docker remediation layer is MCP-style, not a full standalone MCP server. See
 9. Groq returns:
    - the most likely root cause
    - a confidence score
-   - three prioritized remediation actions
+   - prioritized remediation actions
 10. The agent posts the analysis and evidence summary to Slack for human approval.
 
 ## Prometheus Alert Rules
@@ -228,56 +228,74 @@ human approves or rejects a remediation action.
 | `LowOrderSuccessRate` | `for: 2m` | Order success rate must stay low for about 2 minutes before firing. |
 | Alertmanager first send | `group_wait: 20s` | Alertmanager waits 20 seconds before sending the first webhook for a new group. |
 | Alertmanager grouped updates | `group_interval: 5m` | New alerts in the same service/team group may be batched for up to 5 minutes. |
-| Alertmanager repeat | critical `15m`, default/warning `1h` | Critical alerts repeat about every 15 minutes; warning/default alerts repeat about every 1 hour. |
+| Alertmanager repeat | critical `15m`, default/warning `1h` | Critical alerts repeat about every 15 minutes from Alertmanager's previous notification attempt; warning/default alerts repeat about every 1 hour. |
 | Agent queue processing | `90s` | The AI agent starts queued incident processing at most once every 90 seconds. |
-| Agent dedupe | `10m` | The same `alertname:service` incident is ignored for 10 minutes after it was processed. |
+| Agent dedupe | `10m` | The same `alertname:service` incident is ignored for 10 minutes after the previous incident finished processing. |
 | Approval expiry | `10m` | A pending high-risk approval expires after 10 minutes. |
 | Restart validation | `2` checks, `30s` apart | Before an approved restart, the agent checks Docker, Prometheus, and Alertmanager twice. |
 | Dashboard refresh | `3s` | The local approval dashboard reloads action status every 3 seconds. |
 
-### Alert Timing Diagram
+### Alert Timing Relationships
 
 ```mermaid
-sequenceDiagram
-    participant S as Service / Metrics
-    participant P as Prometheus
-    participant A as Alertmanager
-    participant R as AI Agent
-    participant D as Dashboard / Slack
-
-    S->>P: Metrics scraped every 10s
-    loop Every 15s
-        P->>P: Evaluate alert rules
+flowchart LR
+    subgraph Targets["Scrape targets"]
+        AG["api-gateway /metrics"]
+        OS["order-service /metrics"]
+        PS["payment-service /metrics"]
+        OC["otel-collector :8889"]
     end
-    P->>P: Condition stays true for 1m or 2m
-    P->>A: Alert becomes firing
-    A->>A: Wait group_wait 20s
-    A->>R: POST /alerts
-    R->>R: Queue and dedupe by alertname:service
-    R->>R: Process queued incident within up to 90s
-    R->>P: Query metrics evidence
-    R->>R: Query Loki logs and Jaeger traces
-    R->>R: Analyze with LLM and policy
-    R->>D: Create action / approval request
-    D->>D: Dashboard refreshes every 3s
-```
 
-```mermaid
-flowchart TD
-    A[Approval request created] --> B{Human decision}
-    B -->|Reject| C[Action status: rejected]
-    C --> D[No restart, no silence, alert state unchanged]
-    D --> E{Alert still firing?}
-    E -->|Yes| F[Alertmanager repeats: critical 15m, warning/default 1h]
-    E -->|No| G[Alertmanager sends resolved; agent does not queue it]
+    subgraph Prom["Prometheus"]
+        SCRAPE["scrape_interval<br/>10s"]
+        EVAL["evaluation_interval<br/>15s"]
+        FOR1["target-down / error alerts<br/>for: 1m"]
+        FOR2["latency / order success alerts<br/>for: 2m"]
+    end
 
-    B -->|Approve| H[Action status: validating]
-    H --> I[Check Docker, Prometheus, Alertmanager twice, 30s apart]
-    I --> J{Service unhealthy and Prometheus firing?}
-    J -->|Yes| K[Execute restart]
-    K --> L[Action status: succeeded or failed]
-    J -->|No| M[Cancel restart]
-    M --> N[cancelled_resolved, cancelled_already_recovered, alert_state_mismatch, or validation_failed]
+    subgraph AM["Alertmanager"]
+        GW["group_wait<br/>20s"]
+        GI["group_interval<br/>5m"]
+        REP_CRIT["critical repeat_interval<br/>15m from previous notification attempt"]
+        REP_WARN["warning/default repeat_interval<br/>1h"]
+        RES["send_resolved<br/>true"]
+    end
+
+    subgraph Agent["AI remediation agent"]
+        DEDUPE["dedupe by alertname:service<br/>10m after incident processing finishes"]
+        QUEUE["queue worker<br/>max once every 90s"]
+        APPROVAL["approval TTL<br/>10m from action createdAt"]
+        VALIDATE["restart validation<br/>2 checks, 30s apart"]
+    end
+
+    subgraph Human["Human decision"]
+        REJECT["Reject<br/>does not silence alert"]
+        APPROVE["Approve<br/>executes only after validation"]
+        EXPIRE["Approve after TTL<br/>status: expired"]
+    end
+
+    AG --> SCRAPE
+    OS --> SCRAPE
+    PS --> SCRAPE
+    OC --> SCRAPE
+    SCRAPE --> EVAL
+    EVAL --> FOR1
+    EVAL --> FOR2
+    FOR1 --> GW
+    FOR2 --> GW
+    GW --> DEDUPE
+    GI -. "new alerts in same group" .-> DEDUPE
+    REP_CRIT -. "still firing" .-> DEDUPE
+    REP_WARN -. "still firing" .-> DEDUPE
+    RES -. "resolved webhook" .-> DEDUPE
+    DEDUPE --> QUEUE
+    QUEUE --> APPROVAL
+    APPROVAL --> REJECT
+    APPROVAL --> APPROVE
+    APPROVAL --> EXPIRE
+    APPROVE --> VALIDATE
+    REJECT -. "alert remains firing; wait for repeat" .-> REP_CRIT
+    DEDUPE -. "repeat may be skipped if still inside 10m dedupe" .-> REP_CRIT
 ```
 
 ### Expected Timing By Scenario
@@ -299,13 +317,11 @@ Expected target-down mapping:
 | `order-service` | `OrderServiceTargetDown` | `order-service` |
 | `payment-service` | `PaymentServiceTargetDown` | `payment-service` |
 
-If a user rejects the restart action, only that action is rejected. Reject does
-not silence Alertmanager, change Prometheus state, or recover the service. If
-the alert is still firing, Alertmanager sends it again at the next
-`repeat_interval`: about 15 minutes for critical alerts and about 1 hour for
-warning/default alerts. Because the agent dedupe window is 10 minutes, a
-critical repeat can create a new incident and a new approval request after the
-previous action has expired.
+Reject only rejects the current action. It does not silence Alertmanager, change
+Prometheus state, or recover the service. If a critical alert is still firing,
+a new approval usually appears around 15 to 30 minutes after the previous one:
+Alertmanager repeats every 15 minutes, but the agent may skip a repeat that
+arrives inside its 10-minute dedupe window.
 
 If a user approves a restart after a delay, the agent does not restart
 immediately. It first validates the live state. If the service is already
@@ -402,10 +418,8 @@ For a firing alert, the agent aims to produce output like this:
 - confidence: percentage confidence score
 - evidence used: metrics, logs, and traces that support the diagnosis
 - trace IDs: linked trace IDs found in Loki and resolved in Jaeger
-- recommended actions:
-  1. restart the failing service
-  2. check recent logs
-  3. inspect metrics for saturation or latency
+- recommended actions such as restarting a target-down service, checking recent
+  logs, or inspecting relevant metrics
 
 ## Useful URLs
 
@@ -475,10 +489,8 @@ curl http://localhost:3003/incidents/<incident-id>/evidence
 
 This shows the context that was sent to the LLM: alert labels, metrics, logs, traces, correlated signals, missing signals, and the resulting analysis.
 
-Restart approvals expire after 10 minutes. Before an approved restart executes,
-the agent checks Docker, Prometheus, and Alertmanager twice, 30 seconds apart. A
-healthy or recovered service cancels the restart; failed or inconsistent checks
-fail closed and are recorded in the approval and audit endpoints.
+For approval expiry and restart validation timing, see
+`Alert Timing Summary`.
 
 ## Troubleshooting
 
